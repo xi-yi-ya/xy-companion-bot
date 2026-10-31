@@ -14,6 +14,7 @@ from astrbot.api.web import error_response, json_response, request
 from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import ToolSet
 
+from .activity import ActivityTracker
 from .embeddings import LocalEmbedding
 from .memory import TZ, MemoryStore, level
 from .persona import L0_FIELDS, L1_FIELDS, build_system_prompt
@@ -59,6 +60,7 @@ class CompanionMemory(Star):
         super().__init__(context)
         self.store = MemoryStore(os.environ["COMPANION_DATABASE_DSN"])
         self.web = WebAccess(self.store.pool)
+        self.activity = ActivityTracker()
         self.ready = False
         self.task = None
         self.provider_id = os.environ.get("COMPANION_PROVIDER_ID", "companion_deepseek")
@@ -77,6 +79,7 @@ class CompanionMemory(Star):
             ("persona/discover", self.discover_persona, ["POST"]),
             ("web", self.page_web, ["GET"]),
             ("web", self.save_web, ["POST"]),
+            ("status", self.page_status, ["GET"]),
         ]:
             context.register_web_api(
                 f"/astrbot_plugin_companion_memory/{endpoint}",
@@ -136,22 +139,24 @@ class CompanionMemory(Star):
             "known_memories": existing,
             "messages": [{"id": r["id"], "role": r["role"], "content": r["content"]} for r in rows],
         }
-        response = await self.context.llm_generate(
-            chat_provider_id=self.provider_id,
-            prompt=json.dumps(payload, ensure_ascii=False),
-            system_prompt=EXTRACTION,
-        )
+        with self.activity.working("正在整理记忆"):
+            response = await self.context.llm_generate(
+                chat_provider_id=self.provider_id,
+                prompt=json.dumps(payload, ensure_ascii=False),
+                system_prompt=EXTRACTION,
+            )
         text = response.completion_text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         return json.loads(text)["memories"]
 
     async def persona_json(self, system, payload):
-        response = await self.context.llm_generate(
-            chat_provider_id=self.provider_id,
-            system_prompt=system,
-            prompt=json.dumps(payload, ensure_ascii=False, default=str),
-        )
+        with self.activity.working("正在检查设定"):
+            response = await self.context.llm_generate(
+                chat_provider_id=self.provider_id,
+                system_prompt=system,
+                prompt=json.dumps(payload, ensure_ascii=False, default=str),
+            )
         text = response.completion_text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
@@ -278,6 +283,21 @@ class CompanionMemory(Star):
                     "assistant",
                     resp.completion_text,
                 )
+
+    @filter.on_agent_begin()
+    async def agent_busy(self, event: AstrMessageEvent, run_context):
+        if not event.get_extra("companion_message"):
+            return
+        tokens = event.get_extra("companion_activity_tokens") or {}
+        key = str(id(run_context))
+        if key not in tokens:
+            tokens[key] = self.activity.begin("正在回复", asyncio.current_task())
+        event.set_extra("companion_activity_tokens", tokens)
+
+    @filter.on_agent_done()
+    async def agent_idle(self, event: AstrMessageEvent, run_context, response):
+        tokens = event.get_extra("companion_activity_tokens") or {}
+        self.activity.end(tokens.pop(str(id(run_context)), None))
 
     @filter.after_message_sent()
     async def sent(self, event: AstrMessageEvent):
@@ -422,7 +442,37 @@ class CompanionMemory(Star):
         turn = event.get_extra("companion_web_turn")
         if not msg or turn is None:
             return "No web budget or user scope for this event"
-        return await turn.run(self.web, msg["person_id"], msg["id"], action, value)
+        with self.activity.working("正在读网页" if action == "fetch" else "正在搜索"):
+            return await turn.run(self.web, msg["person_id"], msg["id"], action, value)
+
+    async def page_status(self):
+        database = False
+        if self.ready:
+            try:
+                async with self.store.pool.connection(timeout=2) as conn:
+                    await conn.execute("SELECT 1")
+                database = True
+            except Exception:
+                pass
+        name = "陪伴 Bot"
+        if database:
+            try:
+                name = (await self.store.personas.profile())["profile"]["name"]
+            except Exception:
+                database = False
+        provider = self.context.get_provider_by_id(self.provider_id)
+        return json_response(
+            {
+                **self.activity.snapshot(),
+                "application": "xy-companion-bot",
+                "instance_id": os.environ.get("COMPANION_INSTANCE_ID", ""),
+                "pid": os.getpid(),
+                "ready": self.ready and database and self.store.embedder is not None,
+                "database": database,
+                "model": provider.meta().model if provider else self.provider_id,
+                "bot_name": name,
+            }
+        )
 
     async def page_web(self):
         person = request.query.get("person", "")

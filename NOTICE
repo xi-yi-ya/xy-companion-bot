@@ -9,3 +9,10 @@ pgvector: https://github.com/pgvector/pgvector (PostgreSQL License).
 Pinned Windows PG18 binaries: https://github.com/andreiramani/pgvector_pgsql_windows/releases/tag/0.8.7
 
 Third-party models, binaries, runtime data and credentials are not included in this repository.
+
+Desktop GUI: PySide6-Essentials / Qt for Python 6.12.0 and shiboken6 (LGPL-3.0/GPL commercial alternatives).
+https://doc.qt.io/qtforpython-6/
+Shared-library license texts are copied alongside the local GUI build.
+Process inspection: psutil 7.1.3 (BSD-3-Clause).
+Build tool: PyInstaller 6.22.3 (GPL with the PyInstaller bootloader exception).
+https://pyinstaller.org/

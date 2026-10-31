@@ -5,6 +5,7 @@ aiohappyeyeballs==2.7.1
 aiohttp==3.14.5
 aiosignal==1.4.0
 aiosqlite==0.22.1
+altgraph==0.17.5
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anthropic==2.3.0
@@ -83,6 +84,7 @@ optionaldict==0.1.2
 ormsgpack==1.13.0
 packaging==26.3
 pandas==3.1.0
+pefile==2024.8.26
 pgvector==0.5.1
 pillow==13.0.0
 pip==26.2.2
@@ -105,10 +107,13 @@ pydantic-core==2.50.2
 pydantic-settings==2.16.2
 pydub==0.25.1
 pygments==2.21.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
 pyjwt==2.15.1
 pyotp==2.10.0
 pypdf==6.21.4
 pyromark==0.10.3
+pyside6-essentials==6.12.0
 pysocks==1.7.1
 pytest==9.2.0
 pytest-asyncio==1.4.1
@@ -120,6 +125,7 @@ python-ripgrep==0.0.8
 python-socks==3.2.1
 python-telegram-bot==22.8
 pywin32==312
+pywin32-ctypes==0.2.3
 pyyaml==6.0.3
 qq-botpy==1.2.1
 qrcode==8.2
@@ -133,7 +139,9 @@ requests-toolbelt==1.0.0
 rich==15.0.0
 rpds-py==2026.9.1
 ruff==0.17.3
+setuptools==84.2.1
 shellingham==1.5.4
+shiboken6==6.12.0
 shipyard-neo-sdk==0.2.0
 shipyard-python-sdk==0.2.4
 silk-python==0.2.9

@@ -4,11 +4,28 @@ AstrBot v4.29.4（`61335414433db721b3f7ecc93f90deafe0a59d78`）+ 自研插件 + 
 
 ## 启动与使用
 
-1. 双击 `Start-Bot.cmd`，运行 `启动陪伴Bot.ps1`，或执行 `.venv\Scripts\python.exe start.py`。已经在线时不需要重复启动。
+1. 双击桌面“陪伴Bot”快捷方式或本机 `runtime/desktop/CompanionBot/CompanionBot.exe`。也可用 `Start-Bot.vbs`、`Start-Bot.cmd` 或 `启动陪伴Bot.ps1` 打开托盘 GUI。服务已运行时会连接现有实例，重复打开只显示已有窗口。
 2. 打开 `http://127.0.0.1:6185/#/chatbox`，本机免账号登录。
 3. 在 AstrBot 的 Chat 中创建会话并聊天。
 4. 点击聊天页右上角 **Bot 设置**，可以编辑 L0 固定人设、查看 L1 长期习惯、审批 Bot 修改申请、查看 L2 记忆及规则、管理自主上网。保存或批准后从下一条消息生效，设置保存在 PostgreSQL。也可直接打开 `http://127.0.0.1:6185/#/plugin-view/astrbot_plugin_companion_memory/memories`。
 5. 可手动整理今天；自动任务在北京时间 03:00 之后整理未完成日期。关闭电脑时不运行，下次在线补做。
+
+## 托盘与桌面 GUI
+
+托盘主要显示 **正在运行 · 空闲** 和 **正在运行 · 忙碌**。回复、搜索/读网页、每日记忆整理和设定检查期间，状态跟随真实任务变化；结束、异常或取消都会清除忙碌。图标空闲为绿色，忙碌为暖黄色。启动、停止或故障时显示对应的必要状态。
+
+右键托盘可打开聊天、Bot 设置和小控制窗口，或停止/启动、退出。关闭控制窗口会收进托盘，Bot 继续在线；“退出（停止 Bot）”先调用 AstrBot 原生关闭流程，清理插件与连接，再退出托盘。PostgreSQL 服务保持运行。后端未及时响应时，控制器只会结束此项目确切路径对应的 Python 进程，不处理其他项目或数据库进程。
+
+GUI 与后端分别限制单实例。后台进程存在且 Web、插件、数据库都就绪才显示运行中。打包程序只包含托盘与控制窗口，后端继续使用项目 `.venv`，模型、记忆和凭据仍留在原位置；因此它是当前本机安装的 EXE 启动器，**不能只复制 EXE 到另一台电脑使用**。请保留整个 `CompanionBot` 输出目录及现有项目环境。
+
+从源码重新打包：
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-gui.txt
+.venv\Scripts\python.exe build_gui.py
+```
+
+输出为 `runtime/desktop/CompanionBot/CompanionBot.exe`。构建使用临时的干净 PATH，防止 PostgreSQL 的同名 ICU DLL 被误打包；不会修改系统 PATH 或 PostgreSQL 安装。命令行回退入口仍可用 `.venv\Scripts\python.exe start.py`，管理入口为 `.venv\Scripts\python.exe manage_bot.py status|start|stop`。
 
 `local_config.json` 保存模型、Key 来源文件等本地配置。Key 仅在启动时从用户提供的文本文件读取，AstrBot 配置中保存环境变量引用 `$DEEPSEEK_API_KEY`。不要删除或移动来源文件，除非同时修改路径。
 
@@ -74,11 +91,13 @@ L1 每日候选从近 30 天最多 100 条用户消息中发现，至少有 6 �
 
 插件源码在 `plugin/`，启动时同步到运行目录。修改插件后重启实例生效。前台运行时用 Ctrl+C 停止；后台实例使用 `停止陪伴Bot.ps1`。上游源码在 `vendor/AstrBot`，保持原状，升级前先备份数据库和 runtime；回退时恢复对应代码与备份，不删除原始素材。
 
-当前验证：36 项自动化测试通过，覆盖 PostgreSQL 记忆/设置、免登录访问、本机访问边界、人工审批、拒绝/冲突、版本变化、跨日候选、L1 重审、联网开关、调用/内容预算和错误处理。
+当前验证：44 项自动化测试通过，覆盖 PostgreSQL 记忆/设置、免登录访问、本机访问边界、人工审批、拒绝/冲突、版本变化、跨日候选、L1 重审、联网开关、调用/内容预算、忙闲与取消清理、单实例、停止范围、关闭窗口留托盘和启动中退出。
 
 真实 DeepSeek 验收通过：Bot 工具申请→检查通过但不生效，聊天“同意”仍不执行；跨日发现 L1→页面显示差异与来源→取消保持待审→手动确认批准→刷新保留。合成用户数据已清理，正式 L0 保持原样。真实搜索→读取官方网页→带来源回答通过，调用记录证实两种联网工具均执行；联网开关保存与刷新保留通过。插件沙箱内使用页面对话框进行二次确认，不依赖被沙箱拦截的浏览器原生 `confirm()`。
 
 对应脚本为 `persona_live_test.py`、`persona_browser_test.cjs`、`web_live_test.py`、`web_browser_test.cjs`；运行真实测试会消耗 API 调用。原有 Web 聊天、人设下一轮生效、每日整理→向量入库→归档语义召回→恢复 10 级的验证脚本仍保留。自动整理的跨日真实定时触发尚需运行观察，当前通过可控日期和手动触发验证相同任务逻辑。备份导出已执行，完整恢复流程尚未演练。
+
+`desktop_live_test.py` 已验证真实打包 EXE 在 Windows 平台打开窗口并注册托盘、重复打开复用实例、真实 DeepSeek 读网页时忙→闲、退出后 GUI/后端均结束且 PostgreSQL 继续在线、重新打开 EXE 自动启动后端。Qt 自身的窗口测试验证了关闭收进托盘和启动途中退出。Computer Use 内核在本环境报路径初始化错误，因此本次没有通过该工具实际点击 Windows 托盘区域。
 
 ## 依赖安装
 

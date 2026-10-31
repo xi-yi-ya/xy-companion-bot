@@ -1,4 +1,3 @@
 @echo off
 cd /d "%~dp0"
-"%~dp0.venv\Scripts\python.exe" "%~dp0start.py"
-pause
+start "" wscript.exe "%~dp0Start-Bot.vbs"

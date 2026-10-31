@@ -12,6 +12,7 @@ from pathlib import Path
 
 from psycopg.conninfo import make_conninfo
 
+from local_instance import InstanceGuard, instance_id
 from local_secrets import database_parameters
 
 ROOT = Path(__file__).resolve().parent
@@ -33,6 +34,7 @@ def prepare():
     os.environ["COMPANION_PROVIDER_ID"] = settings["provider_id"]
     os.environ["COMPANION_EMBEDDING_DIR"] = str(RUNTIME / "models/bge-small-zh-v1.5")
     os.environ["ASTRBOT_ROOT"] = str(RUNTIME)
+    os.environ["COMPANION_INSTANCE_ID"] = instance_id(ROOT)
     sys.path.insert(0, str(SOURCE))
     (RUNTIME / "data" / "plugins").mkdir(parents=True, exist_ok=True)
     shutil.copytree(
@@ -95,20 +97,30 @@ def prepare():
 
 
 if __name__ == "__main__":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
+    if sys.stdout:
+        sys.stdout.reconfigure(encoding="utf-8")
+    if sys.stderr:
+        sys.stderr.reconfigure(encoding="utf-8")
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    prepare()
     if "--prepare-only" in sys.argv:
+        prepare()
         print("Runtime prepared; API key referenced through environment only")
     else:
         if "--run" not in sys.argv:
             os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), "--run"])
+        guard = InstanceGuard(ROOT)
+        if not guard.acquire(wait_seconds=2):
+            print("Companion Bot is already running; no duplicate backend was started.")
+            raise SystemExit(0)
+        prepare()
         os.chdir(RUNTIME)
         (RUNTIME / "server.pid").write_text(str(os.getpid()), "utf-8")
         from local_web import install_local_web
 
         install_local_web(int(json.loads((ROOT / "local_config.json").read_text("utf-8"))["port"]))
         sys.argv = [str(ROOT / "start.py")]
-        runpy.run_path(str(SOURCE / "main.py"), run_name="__main__")
+        try:
+            runpy.run_path(str(SOURCE / "main.py"), run_name="__main__")
+        finally:
+            guard.close()
