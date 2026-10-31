@@ -174,3 +174,32 @@ CREATE TABLE IF NOT EXISTS api_usage(
     usage jsonb NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS api_usage_time ON api_usage(started_at);
+CREATE TABLE IF NOT EXISTS proactive_settings(
+    id boolean PRIMARY KEY DEFAULT true CHECK(id),payload jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS proactive_state(
+    person_id text PRIMARY KEY REFERENCES persons(id),last_user_id bigint NOT NULL,last_user_at timestamptz NOT NULL,
+    due_at timestamptz,interval_seconds integer NOT NULL,awaiting_reply boolean NOT NULL DEFAULT false,
+    current_run uuid,attempts integer NOT NULL DEFAULT 0,updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS proactive_deliveries(
+    id uuid PRIMARY KEY,person_id text NOT NULL REFERENCES persons(id),source_user_id bigint NOT NULL,
+    target jsonb NOT NULL,status text NOT NULL CHECK(status IN ('generating','sending','sent','unknown','skipped','cancelled','failed')),
+    text text,reason text,error text,receipt jsonb NOT NULL DEFAULT '{}',lease_until timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),sent_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS proactive_delivery_once ON proactive_deliveries(person_id,source_user_id) WHERE status IN ('sending','sent','unknown');
+CREATE TABLE IF NOT EXISTS message_attachments(
+    id uuid PRIMARY KEY,message_id bigint NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    kind text NOT NULL,name text NOT NULL,status text NOT NULL,path text,context_text text NOT NULL,error text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE message_attachments DROP CONSTRAINT IF EXISTS message_attachments_message_id_kind_name_key;
+CREATE INDEX IF NOT EXISTS attachments_message ON message_attachments(message_id);
+CREATE OR REPLACE VIEW message_context AS
+SELECT m.id,m.person_id,m.conversation_id,m.event_id,m.role,
+    m.content || coalesce(a.body,'') AS content,m.created_at,
+    CASE WHEN a.body IS NULL THEN m.token_count ELSE NULL END AS token_count
+FROM messages m LEFT JOIN LATERAL (
+    SELECT string_agg(context_text,E'\n' ORDER BY created_at,id) AS body FROM message_attachments WHERE message_id=m.id
+) a ON true;

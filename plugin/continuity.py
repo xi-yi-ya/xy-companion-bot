@@ -62,7 +62,7 @@ class Continuity:
             async with self.pool.connection() as conn:
                 batch = await (
                     await conn.execute(
-                        "SELECT id,person_id,conversation_id,event_id,role,content,created_at,token_count FROM messages WHERE person_id=%s AND id>%s AND id<%s ORDER BY id LIMIT 512",
+                        "SELECT id,person_id,conversation_id,event_id,role,content,created_at,token_count FROM message_context WHERE person_id=%s AND id>%s AND id<%s ORDER BY id LIMIT 512",
                         (person, cursor, before),
                     )
                 ).fetchall()
@@ -139,7 +139,7 @@ class Continuity:
                         async with self.pool.connection() as conn:
                             old = await (
                                 await conn.execute(
-                                    "SELECT id,content FROM messages WHERE person_id=%s AND id=ANY(%s)",
+                                    "SELECT id,content FROM message_context WHERE person_id=%s AND id=ANY(%s)",
                                     (person, list(ids)),
                                 )
                             ).fetchall()
@@ -256,7 +256,7 @@ class Continuity:
                 async with self.pool.connection() as conn:
                     original = await (
                         await conn.execute(
-                            "SELECT * FROM messages WHERE person_id=%s AND conversation_id=%s AND event_id=%s AND role='user'",
+                            "SELECT * FROM message_context WHERE person_id=%s AND conversation_id=%s AND event_id=%s AND role='user'",
                             (person, turn[0]["conversation_id"], turn[0]["event_id"]),
                         )
                     ).fetchone()

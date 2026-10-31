@@ -85,6 +85,22 @@ async function loadQQ(){const data=unwrap(await bridge.apiGet('qq'));const phase
 $('refresh-qq').onclick=()=>busy($('refresh-qq'),async()=>{unwrap(await bridge.apiPost('qq/refresh',{}));await loadQQ();notice('QQ 二维码已刷新。');});
 if(new URLSearchParams(location.search).get('tab')==='qq')showTab('qq');
 let qqPolling=false;
+function contactTime(value){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';}
+async function loadContact(updateSettings=true){
+  const data=unwrap(await bridge.apiGet('proactive')),s=data.settings,state=data.state;
+  if(updateSettings){$('contact-enabled').checked=s.enabled;$('contact-min').value=s.min_hours;$('contact-max').value=s.max_hours;$('contact-quiet').checked=s.quiet_enabled;$('contact-start').value=s.quiet_start;$('contact-end').value=s.quiet_end;}
+  $('contact-state').textContent=!s.enabled?'主动联系已关闭':data.worker_error?'调度器正在重试连接':state?.awaiting_reply?'等待你的回复 · 暂停主动联系':!data.qq_ready?'等待 QQ 上线并绑定主号':!state?'等你发来第一条消息':state.current_run?'正在准备主动消息':state.attempts>=3?'准备消息连续失败 · 等你回复后重新开始':`下次最早联系：${contactTime(state.due_at)}`;
+  $('contact-detail').textContent=`${state?'上次收到你的消息：'+contactTime(state.last_user_at)+'。 ':''}间隔 ${s.min_hours}～${s.max_hours} 小时${s.quiet_enabled?'；免打扰 '+s.quiet_start+'～'+s.quiet_end:'；未开启免打扰'}。${!data.qq_ready?' QQ 尚未就绪时不会生成或发送。':''}${data.worker_error?' '+data.worker_error:''}`;
+  const labels={generating:'正在准备',sending:'正在发送',sent:'已发送 · 等待回复',unknown:'发送结果未确认 · 等待回复',skipped:'本次保持安静',cancelled:'已取消',failed:'准备未完成'};
+  $('contact-deliveries').replaceChildren();
+  if(!data.deliveries.length)$('contact-deliveries').append(node('p','还没有主动联系记录。','empty'));
+  for(const item of data.deliveries){const card=node('article','','memory-card');card.append(node('div',`${labels[item.status]||item.status} · ${contactTime(item.sent_at||item.created_at)}`,'meta'));if(item.text)card.append(node('div',item.text,'content'));if(item.reason||item.error)card.append(node('p',[item.reason,item.error].filter(Boolean).join(' · '),'hint'));$('contact-deliveries').append(card);}
+}
+$('save-contact').onclick=()=>busy($('save-contact'),async()=>{unwrap(await bridge.apiPost('proactive',{enabled:$('contact-enabled').checked,min_hours:Number($('contact-min').value),max_hours:Number($('contact-max').value),quiet_enabled:$('contact-quiet').checked,quiet_start:$('contact-start').value,quiet_end:$('contact-end').value}));await loadContact();notice('主动联系设置已保存。');});
+$('refresh-contact').onclick=()=>busy($('refresh-contact'),async()=>{await loadContact(false);notice('排期已刷新，未改变计时。');});
+$('preview-contact').onclick=()=>busy($('preview-contact'),async()=>{notice('正在结合人设、记忆和聊天生成预览…');const data=unwrap(await bridge.apiPost('proactive/preview',{})),r=data.preview;const card=node('article','','memory-card');card.append(node('div',r.send?'这次想说（仅预览）':'这次选择保持安静','meta'),node('div',r.send?r.text:r.reason,'content'));$('contact-preview').replaceChildren(card);notice('预览完成，没有向 QQ 发送。');});
+let contactPolling=false;
+setInterval(async()=>{if($('proactive-panel').hidden||contactPolling)return;contactPolling=true;try{await loadContact(false);}catch(e){$('contact-state').textContent='正在等待 Bot 重新连接…';}finally{contactPolling=false;}},15000);
 setInterval(async()=>{if($('qq-panel').hidden||qqPolling)return;qqPolling=true;try{await loadQQ();}catch(e){$('qq-state').textContent='正在等待 Bot 重新连接…';}finally{qqPolling=false;}},5000);
 
 function table(target,headers,rows){const t=document.createElement('table'),head=document.createElement('tr');for(const h of headers)head.append(node('th',h));t.append(head);for(const values of rows){const tr=document.createElement('tr');for(const value of values)tr.append(node('td',value));t.append(tr);}$(target).replaceChildren(t);}
@@ -107,4 +123,4 @@ $('save-web').onclick=()=>busy($('save-web'),async()=>{unwrap(await bridge.apiPo
 $('refresh-web').onclick=()=>busy($('refresh-web'),async()=>{await loadWeb(false);notice('联网记录已刷新。');});
 $('discover').onclick=()=>busy($('discover'),async()=>{if(!current)throw new Error('先聊几句，让系统有交流依据。');notice('正在检查长期习惯候选，将按需调用 DeepSeek…');const result=unwrap(await bridge.apiPost('persona/discover',{person:current}));await loadPersona();notice(result.status==='insufficient_evidence'?'跨日证据还不够，暂时不生成长期习惯。':result.candidates!==undefined?`检查完成，生成 ${result.candidates} 条候选；批准前不生效。`:'今天的候选检查已处理或正在进行，不重复生成。');});
 $('consolidate').onclick=()=>busy($('consolidate'),async()=>{if(!current)throw new Error('先聊几句，再整理记忆。');notice('正在整理，将调用 DeepSeek…');const result=unwrap(await bridge.apiPost('consolidate',{person:current,day:$('day').value}));await loadMemories();notice(result.status==='complete'?'整理完成。':result.status==='up_to_date'?'这一天没有尚未整理的新消息。':`整理结果：${result.status}`);});
-try{await Promise.all([loadSettings(),loadMemories()]);await Promise.all([loadPersona(),loadWeb(),loadMetrics(),loadQQ()]);notice('人设、习惯与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}
+try{await Promise.all([loadSettings(),loadMemories()]);await Promise.all([loadPersona(),loadWeb(),loadMetrics(),loadQQ(),loadContact()]);notice('人设、习惯与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}

@@ -1,0 +1,72 @@
+// Real settings + model preview. Never sends a QQ message or creates a user message.
+const fs=require('node:fs');
+const path=require('node:path');
+const assert=require('node:assert/strict');
+const {chromium}=require('./runtime/browser/node_modules/playwright-core');
+const BASE='http://127.0.0.1:6185/api/v1/plugins/extensions/astrbot_plugin_companion_memory/';
+(async()=>{
+  const browser=await chromium.launch({executablePath:'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',headless:true});
+  let context,original;
+  const evidence={started_at:new Date().toISOString()};
+  try{
+    context=await browser.newContext({viewport:{width:1440,height:1100}});
+    const page=await context.newPage(),errors=[];
+    page.on('pageerror',e=>errors.push(e.message));
+    original=await (await context.request.get(BASE+'proactive')).json();
+    const profileBefore=await (await context.request.get(BASE+'persona',{params:{person:'webchat:owner'}})).json();
+    await page.goto('http://127.0.0.1:6185/#/plugin-view/astrbot_plugin_companion_memory/memories',{waitUntil:'networkidle'});
+    await page.locator('iframe').waitFor({state:'attached'});
+    const frame=page.frames().find(f=>f!==page.mainFrame()&&f.url().includes('plugin'));
+    await frame.waitForFunction(()=>document.querySelector('#notice')?.textContent.includes('载入'));
+    const close=page.getByRole('button',{name:'关闭',exact:true});
+    if(await close.isVisible())await close.click();
+    await frame.locator('[data-tab="proactive"]').click();
+    assert.equal(await frame.locator('#contact-min').inputValue(),String(original.settings.min_hours));
+    assert.equal(await frame.locator('#contact-max').inputValue(),String(original.settings.max_hours));
+    assert.equal(await frame.locator('#contact-start').inputValue(),original.settings.quiet_start);
+    assert.equal(await frame.locator('#contact-end').inputValue(),original.settings.quiet_end);
+    await frame.locator('#contact-enabled').uncheck();
+    await frame.locator('#save-contact').click();
+    await frame.waitForFunction(()=>document.querySelector('#notice')?.textContent.includes('设置已保存'));
+    assert.equal((await (await context.request.get(BASE+'proactive')).json()).settings.enabled,false);
+    await frame.locator('#contact-enabled').setChecked(original.settings.enabled);
+    await frame.locator('#contact-max').fill('15');
+    await frame.locator('#save-contact').click();
+    await frame.waitForFunction(()=>document.querySelector('#contact-detail')?.textContent.includes('～15'));
+    assert.equal((await (await context.request.get(BASE+'proactive')).json()).settings.max_hours,15);
+    const saved=await (await context.request.post(BASE+'proactive',{data:original.settings})).json();
+    assert.equal(saved.saved,true);
+    const invalid=await (await context.request.post(BASE+'proactive',{data:{...original.settings,min_hours:15,max_hours:14}})).json();
+    assert.equal(invalid.status,'error');
+    await frame.locator('#refresh-contact').click();
+    await frame.waitForFunction(()=>document.querySelector('#notice')?.textContent.includes('未改变计时'));
+    // Polling and refresh must preserve the user's unsaved draft.
+    await frame.locator('#contact-min').fill('11');
+    await frame.locator('#refresh-contact').click();
+    await frame.waitForFunction(()=>!document.querySelector('#refresh-contact').disabled);
+    assert.equal(await frame.locator('#contact-min').inputValue(),'11');
+    await frame.locator('#contact-min').fill(String(original.settings.min_hours));
+    await frame.locator('#contact-max').fill(String(original.settings.max_hours));
+    const before=await (await context.request.get(BASE+'proactive')).json();
+    const previewResponse=page.waitForResponse(r=>r.url().endsWith('/proactive/preview')&&r.request().method()==='POST',{timeout:200000});
+    await frame.locator('#preview-contact').click();
+    const preview=await (await previewResponse).json();
+    assert.equal(preview.sent,false,JSON.stringify(preview));
+    assert.equal(typeof preview.preview.send,'boolean');
+    await frame.locator('#contact-preview article').waitFor({state:'visible'});
+    const after=await (await context.request.get(BASE+'proactive')).json();
+    assert.deepEqual(after.state,before.state,'Preview changed scheduler state');
+    assert.deepEqual(after.deliveries,before.deliveries,'Preview created outbound delivery');
+    assert.deepEqual(after.settings,original.settings);
+    const profileAfter=await (await context.request.get(BASE+'persona',{params:{person:'webchat:owner'}})).json();
+    assert.deepEqual(profileAfter,profileBefore,'Persona changed during settings/preview test');
+    assert.deepEqual(errors,[]);
+    await page.screenshot({path:path.join(__dirname,'runtime/qa/proactive-settings.png'),fullPage:true});
+    Object.assign(evidence,{settings_ui:true,saved_to_pg:true,validation:true,unsaved_draft_preserved:true,real_model_preview:true,preview_send:preview.preview.send,preview_text_length:preview.preview.text.length,preview_has_persona_version:!!preview.preview.persona_version,preview_has_traits_hash:!!preview.preview.traits_hash,preview_no_delivery:true,preview_no_timer_reset:true,persona_unchanged:true,qq_ready:after.qq_ready,errors});
+    fs.writeFileSync(path.join(__dirname,'runtime/qa/proactive-browser-evidence.json'),JSON.stringify(evidence,null,2));
+    console.log(JSON.stringify(evidence));
+  }finally{
+    if(context&&original)await context.request.post(BASE+'proactive',{data:original.settings});
+    await browser.close();
+  }
+})().catch(e=>{console.error(e.stack);process.exitCode=1;});

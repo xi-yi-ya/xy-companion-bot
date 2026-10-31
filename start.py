@@ -114,6 +114,7 @@ def prepare():
             )
             provider["timeout"] = 180
             provider["max_context_tokens"] = 1048576
+            provider["modalities"] = ["text", "image"]
     compression = config["agent_runner"]["config"]["compression"]
     compression.update(max_turns=-1, fallback_max_tokens=1048576)
     config["agent_runner"]["config"]["misc"]["max_steps"] = 10

@@ -2,9 +2,23 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot 设置</title><link rel="stylesheet" href="./style.css"><script src="/api/plugin/page/bridge-sdk.js"></script></head>
 <body><main>
   <header class="top"><div><small>YOUR LOCAL COMPANION</small><h1>Bot 设置</h1><p>人设决定它是谁，记忆保存你们经历过的事。</p></div><span id="model" class="badge"></span></header>
-  <nav class="tabs" aria-label="Bot 设置分类"><button class="tab active" data-tab="persona" aria-selected="true">L0 固定人设</button><button class="tab" data-tab="habits" aria-selected="false">L1 长期习惯</button><button class="tab" data-tab="approvals" aria-selected="false">修改审批 <span id="pending-count"></span></button><button class="tab" data-tab="memory" aria-selected="false">L2 记忆</button><button class="tab" data-tab="rules" aria-selected="false">记忆规则</button><button class="tab" data-tab="web" aria-selected="false">自主上网</button><button class="tab" data-tab="metrics" aria-selected="false">用量与连续性</button><button class="tab" data-tab="qq" aria-selected="false">QQ 连接</button></nav>
+  <nav class="tabs" aria-label="Bot 设置分类"><button class="tab active" data-tab="persona" aria-selected="true">L0 固定人设</button><button class="tab" data-tab="habits" aria-selected="false">L1 长期习惯</button><button class="tab" data-tab="approvals" aria-selected="false">修改审批 <span id="pending-count"></span></button><button class="tab" data-tab="memory" aria-selected="false">L2 记忆</button><button class="tab" data-tab="rules" aria-selected="false">记忆规则</button><button class="tab" data-tab="web" aria-selected="false">自主上网</button><button class="tab" data-tab="metrics" aria-selected="false">用量与连续性</button><button class="tab" data-tab="proactive" aria-selected="false">主动联系</button><button class="tab" data-tab="qq" aria-selected="false">QQ 连接</button></nav>
   <div class="scope"><label class="compact">互动用户<select id="people" aria-label="互动用户"></select></label><p>固定人设对所有会话生效；习惯和记忆按用户分别保存。</p></div>
   <p id="notice" role="status">正在读取设置…</p>
+  <section id="proactive-panel" class="panel" hidden>
+    <div class="section-heading"><div><h2>偶尔来找你</h2><p>沿用你们的人设、记忆和聊天。只联系已绑定的 QQ 主号。</p></div><button class="primary" id="save-contact">保存主动联系设置</button></div>
+    <label class="toggle"><input id="contact-enabled" type="checkbox">开启主动联系</label>
+    <div class="budget-grid"><label>最短间隔（小时）<input id="contact-min" type="number" min="0.25" max="168" step="0.25"></label><label>最长间隔（小时）<input id="contact-max" type="number" min="0.25" max="168" step="0.25"></label></div>
+    <p class="hint">你在 QQ 或 Web 发来新消息后，随机选择一次等待时长。发出一条后暂停，直到你再次回复。电脑需要保持运行。</p>
+    <label class="toggle"><input id="contact-quiet" type="checkbox">开启免打扰（北京时间）</label>
+    <div class="budget-grid"><label>免打扰开始<input id="contact-start" type="time"></label><label>免打扰结束<input id="contact-end" type="time"></label></div>
+    <p class="hint">到点恰逢免打扰时，顺延至结束后。可跨午夜，例如 23:00～08:00。</p>
+    <div class="callout"><strong id="contact-state" role="status">正在读取排期…</strong><p id="contact-detail"></p></div>
+    <div class="actions"><button id="refresh-contact">刷新状态</button><button id="preview-contact">生成一次预览（不发送）</button></div>
+    <p class="hint">预览会调用模型；只展示它想说的话，不消耗本轮联系机会。关闭再开启也不会跳过“等待你回复”。</p>
+    <div id="contact-preview" aria-live="polite"></div>
+    <h3>最近的主动联系</h3><div id="contact-deliveries"></div>
+  </section>
   <section id="qq-panel" class="panel" hidden>
     <div class="section-heading"><div><h2>在 QQ 里继续聊天</h2><p>和本地 Web 共用人设、记忆和长期习惯。</p></div><button id="refresh-qq">刷新二维码</button></div>
     <p id="qq-state" role="status">正在读取 QQ 状态…</p>

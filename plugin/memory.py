@@ -14,6 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from .context_policy import PolicyStore
 from .continuity import Continuity
 from .persona import PersonaStore
+from .proactive import DEFAULT_CONTACT, ContactStore
 from .settings import DEFAULT_SETTINGS, validate_settings
 from .token_counting import split_text, tokens
 
@@ -47,12 +48,17 @@ class MemoryStore:
         self.personas = PersonaStore(self.pool)
         self.policy = PolicyStore(self.pool)
         self.continuity = Continuity(self.pool, self.policy)
+        self.contact = ContactStore(self.pool)
 
     async def open(self):
         await self.pool.open(wait=True, timeout=10)
         async with self.pool.connection() as conn:
             await conn.execute(Path(__file__).with_name("schema.sql").read_text("utf-8"))
             await self.personas.migrate(conn)
+            await conn.execute(
+                "INSERT INTO proactive_settings(id,payload) VALUES(true,%s) ON CONFLICT DO NOTHING",
+                (Jsonb(DEFAULT_CONTACT),),
+            )
             old = await (
                 await conn.execute("SELECT id FROM context_policy WHERE id=true")
             ).fetchone()
@@ -188,6 +194,7 @@ class MemoryStore:
                     (person, conversation, event_id, role, content, at, tokens(content)),
                 )
             ).fetchone()
+            await self.contact.note_user(conn, row)
         return row
 
     async def archive(self, now=None):
@@ -333,7 +340,18 @@ class MemoryStore:
             ranked.append({**row, "score": score, "lexical": lexical})
         return sorted(ranked, key=lambda r: (r["score"], r["id"]), reverse=True)
 
-    async def context(self, person, message, budget=None, history_budget=None, summarize=None):
+    async def context(
+        self,
+        person,
+        message,
+        budget=None,
+        history_budget=None,
+        summarize=None,
+        *,
+        before_id=None,
+        at=None,
+        purpose="reply",
+    ):
         await self.archive()
         policy = await self.policy.get()
         budget = policy["memory_budget"] if budget is None else budget
@@ -389,7 +407,12 @@ class MemoryStore:
                 blocks.append(line)
                 used += size
                 cost += size
-        history, details = await self.continuity.build(person, message, summarize, history_budget)
+        anchor = {
+            **message,
+            "id": before_id or message["id"],
+            "created_at": at or message["created_at"],
+        }
+        history, details = await self.continuity.build(person, anchor, summarize, history_budget)
         details.update(
             memory_candidates=[
                 {"id": r["id"], "score": round(r["score"], 4), "selected": r["id"] in selected}
@@ -399,6 +422,7 @@ class MemoryStore:
             history_budget=history_budget or policy["history_max"],
             random_sampled=random_mem["id"] if random_mem else None,
             memory_excerpts=excerpts,
+            purpose=purpose,
         )
         async with self.pool.connection() as conn:
             await conn.execute(
@@ -449,7 +473,7 @@ class MemoryStore:
                     """SELECT id,role,content,created_at,conversation_id,
                     (CASE WHEN content ILIKE %s THEN 100 ELSE 0 END +
                     (SELECT count(*) FROM unnest(%s::text[]) AS needle WHERE content ILIKE needle)) AS match_score
-                    FROM messages WHERE person_id=%s AND EXISTS(
+                    FROM message_context WHERE person_id=%s AND EXISTS(
                     SELECT 1 FROM unnest(%s::text[]) AS needle WHERE content ILIKE needle)
                     ORDER BY match_score DESC,id DESC LIMIT 120""",
                     (like_literal(query.strip()), patterns, person, patterns),
