@@ -24,7 +24,7 @@ function showTab(name){for(const tab of document.querySelectorAll('[data-tab]'))
 for(const button of document.querySelectorAll('[data-tab]'))button.onclick=()=>showTab(button.dataset.tab);
 async function busy(button,action){button.disabled=true;try{await action();}catch(e){notice(e.message,true);}finally{button.disabled=false;}}
 function readProfile(){return Object.fromEntries(Object.entries(profileFields).map(([field,id])=>[field,$(id).value]));}
-function sizeHint(){const text=Object.values(readProfile()).join('\n'), chinese=(text.match(/[\u4e00-\u9fff]/g)||[]).length;const size=chinese+Math.ceil((text.length-chinese)/3);$('profile-size').textContent=`当前编辑约 ${size} Token（长度提示） · 已载入版本 v${profileVersion??'…'}${profileDirty?' · 尚未保存':''}`;}
+function sizeHint(){const text=Object.values(readProfile()).join('\n');$('profile-size').textContent=`当前草稿 ${text.length} 字 · 已保存人设 ${personaState?.estimated_tokens??'…'} Token（本地分词估算） · v${profileVersion??'…'}${profileDirty?' · 尚未保存':''}`;}
 for(const id of Object.values(profileFields))$(id).oninput=()=>{profileDirty=true;sizeHint();};
 function renderTraits(){
   $('habits').replaceChildren();
@@ -32,7 +32,7 @@ function renderTraits(){
   for(const t of personaState.traits){
     const card=node('article','','memory-card'+(!t.active?' invalid':''));card.dataset.traitId=t.id;
     card.append(node('div',`#${t.id} · ${personaState.l1_fields[t.field]} · ${!t.active?'已撤回':t.needs_review?'暂停，待重新检查':'已生效 · 不衰减'}`,'meta'),node('div',t.content,'content'));
-    const proposal=personaState.proposals.find(p=>p.id===t.proposal_id);if(proposal)card.append(sourceDetails(proposal.sources));
+    const proposal=personaState.proposals.find(p=>p.id===t.proposal_id);if(t.sources||proposal)card.append(sourceDetails(t.sources||proposal.sources));
     if(t.active&&t.needs_review){const recheck=node('button','重新申请检查');recheck.onclick=()=>busy(recheck,async()=>{notice('正在重新检查原习惯…');const result=unwrap(await bridge.apiPost('persona/recheck',{person:current,id:t.id}));await loadPersona();showTab('approvals');notice(`已重新申请：${statuses[result.status]}。批准前仍保持暂停。`);});card.append(recheck);}
     if(t.active){const revoke=node('button','撤回习惯');revoke.onclick=()=>busy(revoke,async()=>{if(!await askConfirmation(`撤回这条习惯？\n${t.content}`))return;unwrap(await bridge.apiPost('persona/trait',{person:current,id:t.id,action:'revoke'}));await loadPersona();notice('已撤回，后续回复不再注入这条习惯。');});card.append(revoke);}
     $('habits').append(card);
@@ -81,13 +81,25 @@ async function loadPersona(){
 }
 async function loadSettings(){const data=unwrap(await bridge.apiGet('settings')),s=data.settings;$('memory-budget').value=s.memory_budget;$('history-budget').value=s.history_budget;$('memory-instructions').textContent=data.memory_instructions;$('model').textContent=data.model;}
 async function loadWeb(updateSettings=true){const data=unwrap(await bridge.apiGet('web',{person:current}));if(updateSettings){$('web-enabled').checked=data.settings.enabled;$('web-calls').value=data.settings.max_calls;$('web-budget').value=data.settings.context_budget;}$('web-history').replaceChildren();if(!data.history.length)$('web-history').append(node('p','还没有联网记录。聊到需要核实的信息时，它会自主使用搜索。','empty'));for(const item of data.history){const card=node('article','','memory-card');card.append(node('div',`${item.action==='search'?'搜索':'读取网页'} · ${item.success?'成功':'未成功'} · ${item.created_at}`,'meta'),node('div',item.query_or_url,'content'));if(item.error)card.append(node('p',item.error,'hint'));$('web-history').append(card);}}
+
+function table(target,headers,rows){const t=document.createElement('table'),head=document.createElement('tr');for(const h of headers)head.append(node('th',h));t.append(head);for(const values of rows){const tr=document.createElement('tr');for(const value of values)tr.append(node('td',value));t.append(tr);}$(target).replaceChildren(t);}
+function number(value){return value==null?'—':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:0});}
+function dollars(low,high){return low==null?'—':`$${Number(low).toFixed(4)}${Math.abs(Number(high)-Number(low))>.00001?'～$'+Number(high).toFixed(4):''}`;}
+async function loadMetrics(){const data=unwrap(await bridge.apiGet('metrics',{person:current}));$('usage-totals').textContent=`已记录 ${data.context_health.builds} 次上下文构建，静默截断 ${data.context_health.silent_truncations} 次。${data.monthly.length?'费用为 API 用量按已核实价格计算的估算，缺失 usage 会单独标记。':'尚无新调用，之后会显示 API 返回的真实统计。'}`;
+table('usage-monthly',['月份','调用','输入','输出','缓存命中率','费用估算','缺失用量'],data.monthly.map(r=>[r.month,r.calls,number(r.input_tokens),number(r.output_tokens),r.input_tokens?(100*r.cache_hit_tokens/r.input_tokens).toFixed(1)+'%':'—',dollars(r.usd_low,r.usd_high),r.missing_usage]));
+table('usage-web',['月份','搜索 / 读网页成功次数','费用估算'],data.web_fees_monthly.map(r=>[r.month,r.billable_calls,dollars(r.usd,r.usd)]));
+table('usage-daily',['日期','分类','调用','输入 / 输出','缓存 Token','总耗时 / 首 Token','费用估算','缺失用量 / 输出截断'],data.daily.map(r=>[r.day,r.category,r.calls,number(r.input_tokens)+' / '+number(r.output_tokens),number(r.cache_hit_tokens),number(r.latency_ms)+' / '+number(r.first_token_ms)+' ms',dollars(r.usd_low,r.usd_high),r.missing_usage+' / '+r.output_truncations]));
+$('context-metrics').textContent=JSON.stringify({policy:data.policy,count_method:data.count_method,recent:data.recent_contexts},null,2);$('continuity-summaries').textContent=JSON.stringify(data.summaries,null,2);
+for(const [id,rows] of [['cost-forecast',data.forecast.scenarios],['cost-continuous',data.forecast.continuous_scenarios]])table(id,['每天回复','缓存命中','聊天（月）','每日整理（月，峰）','摘要（月，峰）','合计（月）'],rows.map(r=>[r.replies_per_day,r.cache_hit_fraction*100+'%',dollars(r.chat_offpeak_usd,r.chat_peak_usd),'$'+r.daily_memory_peak_usd.toFixed(3),'$'+r.summary_peak_usd.toFixed(3),dollars(r.total_offpeak_usd,r.total_peak_usd)]));}
+$('refresh-metrics').onclick=()=>busy($('refresh-metrics'),async()=>{await loadMetrics();notice('用量与上下文统计已刷新。');});
+
 $('save-profile').onclick=()=>busy($('save-profile'),async()=>{unwrap(await bridge.apiPost('persona/profile',{profile:readProfile(),version:profileVersion}));profileDirty=false;await loadPersona();notice('人设已保存，下一条回复开始生效。');});
 $('save-budgets').onclick=()=>busy($('save-budgets'),async()=>{unwrap(await bridge.apiPost('budgets',{memory_budget:Number($('memory-budget').value),history_budget:Number($('history-budget').value)}));notice('预算已保存，下一条回复开始生效。');});
 for(const button of document.querySelectorAll('.refresh-persona'))button.onclick=()=>busy(button,async()=>{await loadPersona();notice(profileDirty?'申请与习惯已刷新，保留尚未保存的人设草稿。':'人设、习惯与申请已刷新。');});
 $('refresh').onclick=()=>busy($('refresh'),async()=>{await loadMemories();notice('记忆已刷新，等级未重置。');});
-$('people').onchange=async()=>{current=$('people').value;try{await loadMemories();await loadPersona();await loadWeb(false);notice('已切换互动用户。');}catch(e){notice(e.message,true);}};
+$('people').onchange=async()=>{current=$('people').value;try{await loadMemories();await loadPersona();await loadWeb(false);await loadMetrics();notice('已切换互动用户。');}catch(e){notice(e.message,true);}};
 $('save-web').onclick=()=>busy($('save-web'),async()=>{unwrap(await bridge.apiPost('web',{enabled:$('web-enabled').checked,max_calls:Number($('web-calls').value),context_budget:Number($('web-budget').value)}));notice('联网设置已保存，下一条回复生效。');});
 $('refresh-web').onclick=()=>busy($('refresh-web'),async()=>{await loadWeb(false);notice('联网记录已刷新。');});
 $('discover').onclick=()=>busy($('discover'),async()=>{if(!current)throw new Error('先聊几句，让系统有交流依据。');notice('正在检查长期习惯候选，将按需调用 DeepSeek…');const result=unwrap(await bridge.apiPost('persona/discover',{person:current}));await loadPersona();notice(result.status==='insufficient_evidence'?'跨日证据还不够，暂时不生成长期习惯。':result.candidates!==undefined?`检查完成，生成 ${result.candidates} 条候选；批准前不生效。`:'今天的候选检查已处理或正在进行，不重复生成。');});
 $('consolidate').onclick=()=>busy($('consolidate'),async()=>{if(!current)throw new Error('先聊几句，再整理记忆。');notice('正在整理，将调用 DeepSeek…');const result=unwrap(await bridge.apiPost('consolidate',{person:current,day:$('day').value}));await loadMemories();notice(result.status==='complete'?'整理完成。':result.status==='up_to_date'?'这一天没有尚未整理的新消息。':`整理结果：${result.status}`);});
-try{await Promise.all([loadSettings(),loadMemories()]);await Promise.all([loadPersona(),loadWeb()]);notice('人设、习惯与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}
+try{await Promise.all([loadSettings(),loadMemories()]);await Promise.all([loadPersona(),loadWeb(),loadMetrics()]);notice('人设、习惯与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}

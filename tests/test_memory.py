@@ -69,6 +69,21 @@ async def test_random_retrieval_does_not_refresh_and_user_reactivates(store):
     assert level(memory["last_user_mentioned_at"], datetime.now(UTC)) == 10
 
 
+async def test_long_random_archive_is_read_once_without_reinforcement(store):
+    content = "那天我们沿河散步，聊起还没做完的旅行计划。" * 90
+    msg, mid = await seed(store, content, at=datetime.now(UTC) - timedelta(days=9))
+    current = await store.record("webchat", "owner", "web:one", "now", "user", "你好")
+    block, _ = await store.context(current["person_id"], current)
+    assert content in block and block.count(f"[{mid}]") == 1
+    # A small manually chosen budget still includes a labelled excerpt of the
+    # single sampled archive, instead of silently skipping the random mechanism.
+    block, _ = await store.context(current["person_id"], current, budget=200)
+    assert "节选" in block and f"[{mid}]" in block
+    memory = (await store.memories(msg["person_id"]))[0]
+    assert memory["status"] == "archived"
+    assert memory["last_user_mentioned_at"] == msg["created_at"]
+
+
 async def test_scope_and_quote_validation(store):
     message, mid = await seed(store)
     other = await store.record("webchat", "another", "web:other", "m1", "user", "我今天去了公园")
@@ -173,8 +188,8 @@ async def test_budget_and_catchup(store):
         run = await (
             await conn.execute("SELECT * FROM context_runs ORDER BY id DESC LIMIT 1")
         ).fetchone()
-    assert run["estimated_memory_tokens"] <= 2000
-    assert run["estimated_history_tokens"] <= 4000
+    assert run["estimated_memory_tokens"] <= 30000
+    assert run["estimated_history_tokens"] <= 240000
 
 
 async def test_real_vector_semantics_and_archived_lookup(store):

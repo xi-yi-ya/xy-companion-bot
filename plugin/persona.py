@@ -2,13 +2,12 @@
 
 import hashlib
 import json
-import math
-import re
 from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
 
 from .settings import DEFAULT_SETTINGS
+from .token_counting import tokens
 
 L0_FIELDS = {
     "name": "名字",
@@ -29,12 +28,12 @@ def validate_profile(value):
     if not isinstance(value, dict) or set(value) != set(L0_FIELDS):
         raise ValueError("L0 字段不完整")
     for field, text in value.items():
-        if not isinstance(text, str) or len(text) > (40 if field == "name" else 3000):
+        if not isinstance(text, str) or len(text) > (40 if field == "name" else 30000):
             raise ValueError("人设字段过长或类型错误")
     if not value["name"].strip() or not value["personality"].strip():
         raise ValueError("名字和核心设定不能为空")
-    if sum(map(len, value.values())) > 4000:
-        raise ValueError("固定人设过长，请精简后保存")
+    if tokens(profile_text(value)) > 6000:
+        raise ValueError("固定人设超过 6000 Token，请精简后保存；未静默截断")
     return {key: text.strip() for key, text in value.items()}
 
 
@@ -44,8 +43,7 @@ def profile_text(profile):
 
 def estimated_tokens(text):
     """Provide a UI length hint, not an exact provider-token count."""
-    chinese = len(re.findall(r"[\u4e00-\u9fff]", text))
-    return chinese + math.ceil((len(text) - chinese) / 3)
+    return tokens(text)
 
 
 def traits_hash(traits):
@@ -57,7 +55,8 @@ def build_system_prompt(profile, traits, memory_instructions):
     # L0 is supplied by the owner, L1 only includes approved traits; L2 never
     # participates in either persona-writing path.
     l1 = json.dumps(
-        [{"field": t["field"], "habit": t["content"]} for t in traits], ensure_ascii=False
+        [{"id": t.get("id"), "field": t["field"], "habit": t["content"]} for t in traits],
+        ensure_ascii=False,
     )
     return f"""你是一个陪伴型聊天伙伴。人设层级为 L0 > L1 > L2。
 L0 固定人设定义你是谁、性格、说话方式、行为边界和世界观，是人格和表达的最高依据。
@@ -141,7 +140,8 @@ class PersonaStore:
         async with self.pool.connection() as conn:
             return await (
                 await conn.execute(
-                    "SELECT * FROM persona_traits WHERE person_id=%s ORDER BY id", (person,)
+                    "SELECT t.*,p.sources FROM persona_traits t JOIN persona_proposals p ON p.id=t.proposal_id WHERE t.person_id=%s ORDER BY t.id",
+                    (person,),
                 )
             ).fetchall()
 
@@ -176,7 +176,8 @@ class PersonaStore:
             field not in fields
             or not isinstance(new_value, str)
             or not new_value.strip()
-            or len(new_value) > (1000 if layer == "L0" else 120)
+            or len(new_value) > (30000 if layer == "L0" else 1200)
+            or (layer == "L1" and tokens(new_value) > 600)
         ):
             raise ValueError("申请的层级、字段或内容无效")
         if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 600:
@@ -381,15 +382,29 @@ class PersonaStore:
                         await conn.execute(
                             "UPDATE persona_traits SET active=false WHERE id=%s", (old,)
                         )
+                    values = await (
+                        await conn.execute(
+                            "SELECT id,field,content FROM persona_traits WHERE person_id=%s AND active=true AND needs_review=false",
+                            (person,),
+                        )
+                    ).fetchall()
                     if (
-                        await (
-                            await conn.execute(
-                                "SELECT count(*) AS n FROM persona_traits WHERE person_id=%s AND active=true",
-                                (person,),
+                        tokens(
+                            json.dumps(
+                                values
+                                + [
+                                    {
+                                        "id": 0,
+                                        "field": proposal["field"],
+                                        "content": proposal["new_value"],
+                                    }
+                                ],
+                                ensure_ascii=False,
                             )
-                        ).fetchone()
-                    )["n"] >= 10:
-                        raise ValueError("长期习惯已达 10 条，请先撤回一条或提交替换申请")
+                        )
+                        > 6000
+                    ):
+                        raise ValueError("已批准动态人设将超过 6000 Token，未自动删减旧习惯")
                     await conn.execute(
                         "INSERT INTO persona_traits(person_id,field,content,proposal_id) VALUES (%s,%s,%s,%s)",
                         (person, proposal["field"], proposal["new_value"], proposal_id),
@@ -479,7 +494,11 @@ class PersonaStore:
             # Bound automatic work to one 30-day sample and at most three proposals.
             rows = await (
                 await conn.execute(
-                    "SELECT id,content,created_at FROM messages WHERE person_id=%s AND role='user' AND created_at>=now()-interval '30 days' AND created_at < ((%s::date+1)::timestamp AT TIME ZONE 'Asia/Shanghai') ORDER BY id DESC LIMIT 100",
+                    """SELECT id,content,created_at FROM (SELECT id,content,created_at,
+                        row_number() OVER(PARTITION BY (created_at AT TIME ZONE 'Asia/Shanghai')::date ORDER BY id DESC) AS n
+                        FROM messages WHERE person_id=%s AND role='user' AND created_at>=now()-interval '30 days'
+                        AND created_at < ((%s::date+1)::timestamp AT TIME ZONE 'Asia/Shanghai')) sample
+                        WHERE n<=12 ORDER BY created_at DESC LIMIT 360""",
                     (person, day),
                 )
             ).fetchall()
@@ -511,8 +530,8 @@ class PersonaStore:
                     "content": row["content"],
                     "at": str(row["created_at"]),
                 }
-                cost = len(json.dumps(item, ensure_ascii=False).encode())
-                if size + cost <= 12000:
+                cost = tokens(json.dumps(item, ensure_ascii=False))
+                if size + cost <= 48000:
                     sample.append(item)
                     size += cost
             proposals = await generate(profile, await self.active_traits(person), sample)

@@ -1,6 +1,6 @@
 name: astrbot_plugin_companion_memory
 display_name: Bot 设置
 desc: 三层人设、人工审批的设定修改申请、PostgreSQL 分层记忆、自主上网。
-version: v0.2.0
+version: v0.3.0
 author: Owner
 repo: https://github.com/xi-yi-ya/xy-companion-bot

@@ -33,6 +33,13 @@ def prepare():
     os.environ["COMPANION_DATABASE_DSN"] = make_conninfo(**database_parameters())
     os.environ["COMPANION_PROVIDER_ID"] = settings["provider_id"]
     os.environ["COMPANION_EMBEDDING_DIR"] = str(RUNTIME / "models/bge-small-zh-v1.5")
+    os.environ["COMPANION_TOKENIZER_PATH"] = str(
+        RUNTIME / "models/deepseek-tokenizer/tokenizer.json"
+    )
+    if not Path(os.environ["COMPANION_TOKENIZER_PATH"]).is_file():
+        from download_tokenizer import download
+
+        download()
     os.environ["ASTRBOT_ROOT"] = str(RUNTIME)
     os.environ["COMPANION_INSTANCE_ID"] = instance_id(ROOT)
     sys.path.insert(0, str(SOURCE))
@@ -74,11 +81,11 @@ def prepare():
                 "key": ["$DEEPSEEK_API_KEY"],
                 "api_base": "https://api.deepseek.com/v1",
                 "model": settings["model"],
-                "timeout": 90,
+                "timeout": 180,
                 "proxy": "",
                 "custom_extra_body": {
                     "thinking": {"type": "disabled"},
-                    "max_tokens": 4096,
+                    "max_tokens": 12000,
                 },
             }
         ]
@@ -86,13 +93,31 @@ def prepare():
             provider_id=settings["provider_id"], request_max_retries=2
         )
         config["agent_runner"]["config"]["compression"].update(
-            overflow_strategy="truncate_by_turns", max_turns=20
+            overflow_strategy="truncate_by_turns", max_turns=-1, fallback_max_tokens=1048576
         )
-        config["agent_runner"]["config"]["misc"]["max_steps"] = 5
+        config["agent_runner"]["config"]["misc"]["max_steps"] = 10
         config["provider_settings"].update(datetime_system_prompt=False, streaming_response=False)
         config["provider_settings"]["proactive_capability"]["add_cron_tools"] = False
         config["admins_id"] = ["owner"]
         config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2), "utf-8")
+    # Upgrade the actual existing runtime, rather than just changing defaults
+    # for new installations. Preserve provider credentials and platform setup.
+    config = json.loads(config_file.read_text("utf-8-sig"))
+    settings["model"] = "deepseek-flash"
+    settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), "utf-8")
+    for provider in config.get("provider", []):
+        if provider.get("id") == settings["provider_id"]:
+            provider["model"] = "deepseek-flash"
+            provider.setdefault("custom_extra_body", {}).update(
+                thinking={"type": "disabled"}, max_tokens=12000
+            )
+            provider["timeout"] = 180
+            provider["max_context_tokens"] = 1048576
+    compression = config["agent_runner"]["config"]["compression"]
+    compression.update(max_turns=-1, fallback_max_tokens=1048576)
+    config["agent_runner"]["config"]["misc"]["max_steps"] = 10
+    config["provider_settings"]["datetime_system_prompt"] = False
+    config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2), "utf-8")
     return settings
 
 

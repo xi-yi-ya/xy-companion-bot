@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 import httpx
 from psycopg.types.json import Jsonb
 
+from .token_counting import tokens
+
 DEFAULT_WEB_SETTINGS = {"enabled": True, "max_calls": 3, "context_budget": 12000}
 WEB_POLICY = """你可以自主决定何时使用 companion_web_search 搜索、companion_read_web 读取公开网页。
 涉及最新消息、会变化的信息、无法确定的事实或用户要求查资料时，先联网核实。普通陪聊不必机械搜索。
@@ -63,16 +65,27 @@ def public_url(value):
 
 
 def encode_result(value, budget):
-    """Keep valid JSON and a hard UTF-8 byte upper bound, including metadata."""
+    """Keep valid JSON within a local-tokenizer budget, including metadata."""
 
     def encoded():
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
     text = encoded()
-    while len(text.encode()) > budget:
+    while tokens(text) > budget:
         if value.get("content"):
-            value["content"] = value["content"][: max(0, len(value["content"]) - 200)]
+            # Binary search the original text: large pages must not need
+            # thousands of full tokenizations or an unrelated character cap.
+            content = value["content"]
             value["truncated"] = True
+            low, high = 0, len(content)
+            while low < high:
+                mid = (low + high + 1) // 2
+                value["content"] = content[:mid]
+                if tokens(encoded()) <= budget:
+                    low = mid
+                else:
+                    high = mid - 1
+            value["content"] = content[:low]
         elif value.get("results"):
             results = value["results"]
             if len(results) > 1:
@@ -178,7 +191,7 @@ class WebAccess:
             result.update(
                 url=value,
                 title=str(data.get("title", ""))[:200],
-                content=content[:30000],
+                content=content,
             )
         return result
 
@@ -219,5 +232,5 @@ class WebTurn:
                 )
                 await web.audit(person, message_id, action, value, False, 0, error)
                 text = json.dumps({"error": error, "searched": False}, ensure_ascii=False)
-            self.remaining = max(0, self.remaining - len(text.encode()))
+            self.remaining = max(0, self.remaining - tokens(text))
             return text

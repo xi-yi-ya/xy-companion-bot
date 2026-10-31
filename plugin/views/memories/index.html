@@ -2,16 +2,16 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot 设置</title><link rel="stylesheet" href="./style.css"><script src="/api/plugin/page/bridge-sdk.js"></script></head>
 <body><main>
   <header class="top"><div><small>YOUR LOCAL COMPANION</small><h1>Bot 设置</h1><p>人设决定它是谁，记忆保存你们经历过的事。</p></div><span id="model" class="badge"></span></header>
-  <nav class="tabs" aria-label="Bot 设置分类"><button class="tab active" data-tab="persona" aria-selected="true">L0 固定人设</button><button class="tab" data-tab="habits" aria-selected="false">L1 长期习惯</button><button class="tab" data-tab="approvals" aria-selected="false">修改审批 <span id="pending-count"></span></button><button class="tab" data-tab="memory" aria-selected="false">L2 记忆</button><button class="tab" data-tab="rules" aria-selected="false">记忆规则</button><button class="tab" data-tab="web" aria-selected="false">自主上网</button></nav>
+  <nav class="tabs" aria-label="Bot 设置分类"><button class="tab active" data-tab="persona" aria-selected="true">L0 固定人设</button><button class="tab" data-tab="habits" aria-selected="false">L1 长期习惯</button><button class="tab" data-tab="approvals" aria-selected="false">修改审批 <span id="pending-count"></span></button><button class="tab" data-tab="memory" aria-selected="false">L2 记忆</button><button class="tab" data-tab="rules" aria-selected="false">记忆规则</button><button class="tab" data-tab="web" aria-selected="false">自主上网</button><button class="tab" data-tab="metrics" aria-selected="false">用量与连续性</button></nav>
   <div class="scope"><label class="compact">互动用户<select id="people" aria-label="互动用户"></select></label><p>固定人设对所有会话生效；习惯和记忆按用户分别保存。</p></div>
   <p id="notice" role="status">正在读取设置…</p>
   <section id="persona-panel" class="panel">
     <div class="section-heading"><div><h2>它是谁，如何陪你聊天</h2><p>最高人设优先级 · 不衰减 · 由你直接设定</p></div><button class="primary" id="save-profile">保存人设</button></div>
     <label for="bot-name">Bot 名字</label><input id="bot-name" maxlength="40" autocomplete="off">
-    <label for="persona">性格与核心设定</label><textarea id="persona" rows="5" maxlength="3000" spellcheck="false"></textarea>
-    <label for="speech-style">说话方式</label><textarea id="speech-style" rows="3" maxlength="3000" placeholder="例如：自然简短，先回应感受，不每轮总结。"></textarea>
-    <div class="budget-grid"><div><label for="boundaries">行为边界</label><textarea id="boundaries" rows="3" maxlength="3000" placeholder="例如：不虚构共同经历。"></textarea></div><div><label for="worldview">世界观</label><textarea id="worldview" rows="3" maxlength="3000" placeholder="角色所处的背景、对生活的基本态度。"></textarea></div></div>
-    <p id="profile-size" class="hint"></p><p class="hint">建议将核心人设控制在约 300～600 Token，短而清晰即可。原有自由文本保留在“性格与核心设定”中，你可以逐步拆分。</p>
+    <label for="persona">性格与核心设定</label><textarea id="persona" rows="5" maxlength="30000" spellcheck="false"></textarea>
+    <label for="speech-style">说话方式</label><textarea id="speech-style" rows="3" maxlength="30000" placeholder="例如：自然简短，先回应感受，不每轮总结。"></textarea>
+    <div class="budget-grid"><div><label for="boundaries">行为边界</label><textarea id="boundaries" rows="3" maxlength="30000" placeholder="例如：不虚构共同经历。"></textarea></div><div><label for="worldview">世界观</label><textarea id="worldview" rows="3" maxlength="30000" placeholder="角色所处的背景、对生活的基本态度。"></textarea></div></div>
+    <p id="profile-size" class="hint"></p><p class="hint">固定人设完整注入，上限 6000 Token；保持清晰一致即可。原有自由文本保留在“性格与核心设定”中，你可以逐步拆分。</p>
     <p class="hint">保存后下一条回复生效。修改 L0 会使旧申请过期，并暂停已有 L1，等待重新检查与批准。</p>
     <details><summary>查看人设与记忆的执行顺序</summary><p>L0 固定人设 → 已批准的 L1 长期习惯 → 按预算注入 L2 记忆。待审内容不会生效，随机旧事不能修改人设。</p><pre id="memory-instructions"></pre></details>
   </section>
@@ -38,14 +38,27 @@
     <label class="toggle"><input id="web-enabled" type="checkbox">允许 Bot 自主上网</label>
     <p class="hint">使用现有 DeepSeek 凭据。公开搜索与网页读取按成功调用次数计费，详见 <a href="https://api-docs.deepseek.com/guides/search/" target="_blank" rel="noopener noreferrer">DeepSeek 官方说明</a>。</p>
     <div class="budget-grid"><label>每轮最多联网次数<input id="web-calls" type="number" min="1" max="5"></label><label>每轮网页内容预算<input id="web-budget" type="number" min="2000" max="24000" step="1000"></label></div>
-    <p class="hint">预算用于限制模型读取的网页内容，采用保守 Token 上界。联网不影响人设审批要求，网页内容不会自动成为用户事实。</p>
+    <p class="hint">预算用于限制模型读取的网页内容，使用官方本地分词器规划。联网不影响人设审批要求，网页内容不会自动成为用户事实。</p>
     <div class="section-heading budget-heading"><div><h2>最近的联网记录</h2><p>查看它搜索了什么、读取了哪个页面。</p></div><button id="refresh-web">刷新记录</button></div>
     <section id="web-history"></section>
+  </section>
+<section id="metrics-panel" class="panel" hidden>
+    <div class="section-heading"><div><h2>用量与对话连续性</h2><p>规划使用官方本地分词器；实际输入、输出和缓存以 API 返回为准。</p></div><button id="refresh-metrics">刷新用量</button></div>
+    <div id="usage-totals" class="callout"></div>
+    <h2>按月的实际调用统计</h2><div id="usage-monthly" class="table-wrap"></div>
+    <p class="hint">下表为模型费用。搜索/读网页的成功调用费用另列；缺失 API 用量的请求不按零费用推断。</p><div id="usage-web" class="table-wrap"></div>
+    <details><summary>每日分类用量与响应延迟</summary><div id="usage-daily" class="table-wrap"></div></details>
+    <details><summary>当前预算与最近的上下文构建</summary><pre id="context-metrics"></pre></details>
+    <details><summary>历史连续性摘要与来源</summary><pre id="continuity-summaries"></pre></details>
+    <div class="section-heading budget-heading"><div><h2>月度费用情景估算</h2><p>美元，30 天；假设每回复平均输入 30000、输出 500 Token、一次模型请求。后台任务另列，所有数值都不是要求填满的预算。</p></div></div>
+    <div id="cost-forecast" class="table-wrap"></div>
+    <details><summary>持续长聊：平均输入 200000 Token / 回复</summary><p class="hint">近期原文长期在 168000–216000 之间滚动时，应参考此情景。每天新增对话与后台任务假设与上表相同。</p><div id="cost-continuous" class="table-wrap"></div></details>
+    <p class="hint">谷–峰表示全部按谷价与全部按峰价的范围。真实费用取决于历史长度、工具续轮、缓存、回复长度和时段。搜索/读网页按成功次数另计。更大上下文的敏感性分析保存在项目设计报告。</p>
   </section>
   <section id="rules-panel" class="panel" hidden>
     <div class="section-heading"><div><h2>记忆如何保持鲜活</h2><p>L2 按衰减、归档和唤醒方案运行，不改写 L0 / L1。</p></div></div>
     <div class="rule-grid"><article><strong>48 小时降一级</strong><p>普通记忆从 Lv.10 开始，连续 8 天未被用户提及后归档。</p></article><article><strong>用户提及才恢复</strong><p>用户重新提及或确认，恢复 Lv.10。Bot 自己回忆、搜索和查看不刷新等级。</p></article><article><strong>每天整理一次</strong><p>北京时间 03:00 后整理前一天；电脑离线时，下次在线补做。</p></article><article><strong>每轮一次偶然回忆</strong><p>随机读一条归档记忆，与当前话题无关时忽略。用户核心事实不参与普通衰减。</p></article></div>
     <div class="section-heading budget-heading"><div><h2>上下文预算</h2><p>控制每轮带入的记忆和近期对话，原始记录仍会保留。</p></div><button class="primary" id="save-budgets">保存预算</button></div>
-    <div class="budget-grid"><label>记忆预算<input id="memory-budget" type="number" min="200" max="20000" step="100"></label><label>近期对话预算<input id="history-budget" type="number" min="500" max="32000" step="100"></label></div><p class="hint">使用保守的 Token 估算。记忆预算由核心、活跃、随机回忆和本轮历史检索共享；L0 / L1 另计。</p>
+    <div class="budget-grid"><label>记忆预算<input id="memory-budget" type="number" min="200" max="60000" step="100"></label><label>近期对话预算<input id="history-budget" type="number" min="500" max="360000" step="100"></label></div><p class="hint">使用官方本地分词器规划。记忆与完整对话按需使用，历史检索另有独立预算；API 实际 Token 与费用在“用量与连续性”中查看。</p>
   </section>
 </main><script type="module" src="./app.js"></script></body></html>

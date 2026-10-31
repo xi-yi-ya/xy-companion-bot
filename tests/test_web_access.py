@@ -4,6 +4,7 @@ import json
 import httpx
 import pytest
 
+from plugin.token_counting import tokens
 from plugin.web_access import WebAccess, WebTurn, public_url, validate_web_settings
 
 
@@ -55,7 +56,7 @@ async def test_fixed_provider_endpoint_and_hard_per_turn_budget(store, monkeypat
         turn.run(web, msg["person_id"], msg["id"], "search", "official docs"),
         turn.run(web, msg["person_id"], msg["id"], "fetch", "https://example.com/docs"),
     )
-    assert sum(len(result.encode()) for result in results) <= 4000
+    assert sum(tokens(result) for result in results) <= 4000
     assert all(isinstance(json.loads(result), dict) for result in results)
     denied = json.loads(await turn.run(web, msg["person_id"], msg["id"], "search", "again"))
     assert "error" in denied and len(calls) == 2

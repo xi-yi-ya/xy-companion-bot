@@ -143,10 +143,12 @@ def keep_shutdown_alive(lifecycle_class):
 
 def install_local_web(port):
     """Attach the local adapter without editing the pinned AstrBot checkout."""
+    from astrbot.core.agent.context.manager import ContextManager
     from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
     from astrbot.dashboard.server import AstrBotDashboard
 
     keep_shutdown_alive(AstrBotCoreLifecycle)
+    keep_companion_history(ContextManager)
 
     original = AstrBotDashboard.__init__
 
@@ -157,3 +159,24 @@ def install_local_web(port):
         server.asgi_app.add_middleware(LocalWebMiddleware, server=server, port=port)
 
     AstrBotDashboard.__init__ = initialize
+
+
+def keep_companion_history(manager_class):
+    """One owner of compaction: do not re-truncate plugin-managed history."""
+    if getattr(manager_class, "_companion_context_installed", False):
+        return
+    original = manager_class.process
+
+    async def process(manager, messages, *args, **kwargs):
+        if any(
+            getattr(message, "role", None) == "system"
+            and "<L0_FIXED_PERSONA>" in str(getattr(message, "content", ""))
+            for message in messages
+        ):
+            # The plugin builds summaries; the metered wire call enforces the
+            # model's full context bound before any network request is made.
+            return messages
+        return await original(manager, messages, *args, **kwargs)
+
+    manager_class.process = process
+    manager_class._companion_context_installed = True

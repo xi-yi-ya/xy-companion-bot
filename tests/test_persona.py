@@ -174,6 +174,22 @@ async def test_budget_edits_do_not_write_or_pause_persona(store):
     assert len(await store.personas.active_traits(msg["person_id"])) == 1
 
 
+async def test_longer_l0_and_more_than_ten_habits_are_preserved_within_token_caps(store):
+    before = await store.personas.profile()
+    personality = "认真倾听，记得共同的经历，表达自然。" * 250
+    await store.personas.save_profile(
+        {**before["profile"], "personality": personality}, before["version"]
+    )
+    assert (await store.personas.profile())["profile"]["personality"] == personality
+    for index in range(12):
+        msg, p = await candidate(store, value=f"第{index}种互动习惯：先倾听再回应")
+        await store.personas.decide(msg["person_id"], p["id"], "approve")
+    traits = await store.personas.active_traits(msg["person_id"])
+    assert len(traits) == 12
+    prompt = build_system_prompt((await store.personas.profile())["profile"], traits, "参考")
+    assert personality in prompt and all(t["content"] in prompt for t in traits)
+
+
 async def test_concurrent_l0_edit_during_model_check_cannot_leave_pending_request(store):
     async def edit_during_check(profile, traits, proposal):
         before = await store.personas.profile()

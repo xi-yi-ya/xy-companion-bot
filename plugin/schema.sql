@@ -111,6 +111,11 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE INDEX IF NOT EXISTS memories_person_status ON memories(person_id, status, kind);
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding public.vector(512);
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_model text;
+CREATE TABLE IF NOT EXISTS memory_chunks(
+    memory_id bigint NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    chunk_no integer NOT NULL,content text NOT NULL,embedding public.vector(512) NOT NULL,
+    embedding_model text NOT NULL,PRIMARY KEY(memory_id,chunk_no)
+);
 CREATE TABLE IF NOT EXISTS memory_sources (
     memory_id bigint NOT NULL REFERENCES memories(id),
     message_id bigint NOT NULL REFERENCES messages(id),
@@ -146,3 +151,26 @@ CREATE TABLE IF NOT EXISTS context_runs (
     estimated_history_tokens integer NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS token_count integer;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS importance real NOT NULL DEFAULT 0.5;
+ALTER TABLE context_runs ADD COLUMN IF NOT EXISTS details jsonb NOT NULL DEFAULT '{}';
+CREATE TABLE IF NOT EXISTS context_policy(id boolean PRIMARY KEY DEFAULT true CHECK(id),payload jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS continuity_summaries(
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    person_id text NOT NULL REFERENCES persons(id),
+    covered_through bigint NOT NULL,
+    payload jsonb NOT NULL,
+    source_tokens integer NOT NULL,
+    summary_tokens integer NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS continuity_latest ON continuity_summaries(person_id,id DESC);
+CREATE TABLE IF NOT EXISTS api_usage(
+    id uuid PRIMARY KEY,person_id text, message_id bigint, category text NOT NULL, model text,
+    request_id text, started_at timestamptz NOT NULL, finished_at timestamptz NOT NULL DEFAULT now(),
+    input_tokens integer, output_tokens integer,cache_hit_tokens integer,cache_miss_tokens integer,
+    planned_input_tokens integer,latency_ms integer,first_token_ms integer,
+    finish_reason text,error text,estimated_usd_low double precision,estimated_usd_high double precision,
+    usage jsonb NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS api_usage_time ON api_usage(started_at);
