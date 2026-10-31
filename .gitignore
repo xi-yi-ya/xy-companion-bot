@@ -1,0 +1,14 @@
+.venv/
+vendor/
+runtime/
+local_config.json
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+.env
+.env.*
+*.dump
+*.log
+*.pem
+/github_publish.py

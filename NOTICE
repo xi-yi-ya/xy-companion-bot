@@ -1,0 +1,11 @@
+This project integrates with AstrBot, pinned at v4.29.4.
+AstrBot: https://github.com/AstrBotDevs/AstrBot
+AstrBot is licensed under AGPL-3.0-or-later. Its source checkout is obtained separately.
+
+Local Chinese embedding model: BAAI/bge-small-zh-v1.5 (MIT).
+ONNX model source: https://huggingface.co/Qdrant/bge-small-zh-v1.5
+
+pgvector: https://github.com/pgvector/pgvector (PostgreSQL License).
+Pinned Windows PG18 binaries: https://github.com/andreiramani/pgvector_pgsql_windows/releases/tag/0.8.7
+
+Third-party models, binaries, runtime data and credentials are not included in this repository.

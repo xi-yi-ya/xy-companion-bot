@@ -1,0 +1,6 @@
+name: astrbot_plugin_companion_memory
+display_name: Bot 设置
+desc: 人设编辑、分层记忆、记忆规则和上下文预算。
+version: v0.1.0
+author: Owner
+repo: ""

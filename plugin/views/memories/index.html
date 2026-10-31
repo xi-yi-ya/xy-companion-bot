@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot 设置</title><link rel="stylesheet" href="./style.css"><script src="/api/plugin/page/bridge-sdk.js"></script></head>
+<body><main>
+  <header class="top"><div><small>YOUR LOCAL COMPANION</small><h1>Bot 设置</h1><p>设定它的性格，也看看它记住了什么。</p></div><span id="model" class="badge"></span></header>
+  <nav class="tabs" aria-label="Bot 设置分类"><button class="tab active" data-tab="persona" aria-selected="true">人设</button><button class="tab" data-tab="memory" aria-selected="false">记忆</button><button class="tab" data-tab="rules" aria-selected="false">记忆规则</button></nav>
+  <p id="notice" role="status">正在读取设置…</p>
+  <section id="persona-panel" class="panel">
+    <div class="section-heading"><div><h2>它是谁，如何陪你聊天</h2><p>保存后，从下一条回复开始生效。</p></div><button class="primary save-settings">保存人设</button></div>
+    <label for="bot-name">Bot 名字</label><input id="bot-name" maxlength="40" autocomplete="off">
+    <label for="persona">人设与说话方式</label><textarea id="persona" rows="10" maxlength="12000" spellcheck="false"></textarea>
+    <p class="hint">可以写性格、语气、聊天习惯和彼此的关系。聊天中的具体经历由记忆系统整理。</p>
+    <details><summary>查看随人设生效的记忆行为规则</summary><pre id="memory-instructions"></pre></details>
+  </section>
+  <section id="memory-panel" class="panel" hidden>
+    <div class="section-heading"><div><h2>它记住的事情</h2><p>查看不会刷新记忆等级；错误的记忆可以标记失效。</p></div><button id="refresh">刷新记忆</button></div>
+    <div class="tools"><label class="compact">所属用户<select id="people"></select></label><label class="compact">整理日期<input type="date" id="day"></label><button id="consolidate">整理所选日期</button></div>
+    <div id="counts" class="counts"></div>
+    <div class="filters" aria-label="筛选记忆"><button class="active" data-filter="all">全部</button><button data-filter="core">核心长期</button><button data-filter="active">活跃</button><button data-filter="archived">归档</button><button data-filter="invalid">已失效</button></div>
+    <section id="memories"></section>
+    <details><summary>整理记录与上下文用量</summary><pre id="jobs"></pre></details>
+  </section>
+  <section id="rules-panel" class="panel" hidden>
+    <div class="section-heading"><div><h2>记忆如何保持鲜活</h2><p>按我们确定的衰减、归档和唤醒方案运行。</p></div></div>
+    <div class="rule-grid"><article><strong>48 小时降一级</strong><p>普通记忆从 Lv.10 开始，连续 8 天未被用户提及后归档。</p></article><article><strong>用户提及才恢复</strong><p>用户重新提及或确认，恢复 Lv.10。Bot 自己回忆、搜索和查看不刷新等级。</p></article><article><strong>每天整理一次</strong><p>北京时间 03:00 后整理前一天；电脑离线时，下次在线补做。</p></article><article><strong>每轮一次偶然回忆</strong><p>随机读一条归档记忆，与当前话题无关时忽略。核心事实不参与普通衰减。</p></article></div>
+    <div class="section-heading budget-heading"><div><h2>上下文预算</h2><p>控制每轮带入的记忆和近期对话，原始记录仍会保留。</p></div><button class="primary save-settings">保存预算</button></div>
+    <div class="budget-grid"><label>记忆预算<input id="memory-budget" type="number" min="200" max="20000" step="100"></label><label>近期对话预算<input id="history-budget" type="number" min="500" max="32000" step="100"></label></div><p class="hint">使用保守的 Token 估算。记忆预算由核心、活跃、随机回忆和本轮历史检索共享。</p>
+  </section>
+</main><script type="module" src="./app.js"></script></body></html>
