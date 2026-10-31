@@ -87,6 +87,14 @@ async def main():
         # Delete only this run's synthetic identity, never the owner's chat records.
         assert person.startswith("validation:e2e-")
         with psycopg.connect(**database_parameters()) as conn:
+            for table in (
+                "web_requests",
+                "persona_events",
+                "persona_traits",
+                "persona_proposals",
+                "persona_jobs",
+            ):
+                conn.execute(f"DELETE FROM {table} WHERE person_id=%s", (person,))
             conn.execute("DELETE FROM context_runs WHERE person_id=%s", (person,))
             conn.execute("DELETE FROM memory_events WHERE person_id=%s", (person,))
             conn.execute(

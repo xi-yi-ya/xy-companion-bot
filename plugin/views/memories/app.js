@@ -1,43 +1,93 @@
 const bridge=window.AstrBotPluginView;
 const $=id=>document.getElementById(id);
 await bridge.ready();
-let current='', memories=[], filter='all';
+let current='', memories=[], filter='all', personaState, profileVersion, profileDirty=false;
+const profileFields={name:'bot-name',personality:'persona',speech_style:'speech-style',boundaries:'boundaries',worldview:'worldview'};
+const statuses={checking:'检查中',pending:'待你批准',approved:'已批准',rejected:'已拒绝',blocked:'检查未通过',stale:'已过期，需重新申请'};
 $('day').value=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 function unwrap(value){if(value.status==='error')throw new Error(value.message);return value.data??value;}
 function notice(text,error=false){$('notice').textContent=text;$('notice').className=error?'error':'';}
-for(const button of document.querySelectorAll('[data-tab]'))button.onclick=()=>{
-  for(const tab of document.querySelectorAll('[data-tab]')){const active=tab===button;tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active));$(tab.dataset.tab+'-panel').hidden=!active;}
-};
+function node(tag,text,className){const n=document.createElement(tag);n.textContent=text;if(className)n.className=className;return n;}
+// Native confirm() is blocked by AstrBot's sandboxed plugin iframe. Use a real
+// in-page dialog so authorization requires a visible second user action.
+function askConfirmation(text){
+  if(document.querySelector('#confirmation-dialog[open]'))return Promise.resolve(false);
+  const dialog=document.createElement('dialog');dialog.id='confirmation-dialog';dialog.setAttribute('aria-labelledby','confirmation-title');
+  const heading=node('h3','确认操作');heading.id='confirmation-title';const actions=node('div','','actions');
+  const cancel=node('button','取消'),accept=node('button','确认执行','primary');
+  actions.append(cancel,accept);dialog.append(heading,node('p',text,'confirmation-text'),actions);document.body.append(dialog);
+  return new Promise(resolve=>{dialog.onclose=()=>{const accepted=dialog.returnValue==='confirm';dialog.remove();resolve(accepted);};dialog.oncancel=e=>{e.preventDefault();dialog.close('cancel');};cancel.onclick=()=>dialog.close('cancel');accept.onclick=()=>dialog.close('confirm');dialog.showModal();cancel.focus();});
+}
+function sourceDetails(sources){const detail=document.createElement('details');detail.append(node('summary','来源证据'),node('pre',(sources||[]).map(s=>`消息 #${s.message_id}${s.day?' · '+s.day:''}：${s.quote}`).join('\n')));return detail;}
+function fieldLabel(p){return (p.layer==='L0'?personaState.l0_fields:personaState.l1_fields)[p.field]||p.field;}
+function showTab(name){for(const tab of document.querySelectorAll('[data-tab]')){const active=tab.dataset.tab===name;tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active));$(tab.dataset.tab+'-panel').hidden=!active;}}
+for(const button of document.querySelectorAll('[data-tab]'))button.onclick=()=>showTab(button.dataset.tab);
+async function busy(button,action){button.disabled=true;try{await action();}catch(e){notice(e.message,true);}finally{button.disabled=false;}}
+function readProfile(){return Object.fromEntries(Object.entries(profileFields).map(([field,id])=>[field,$(id).value]));}
+function sizeHint(){const text=Object.values(readProfile()).join('\n'), chinese=(text.match(/[\u4e00-\u9fff]/g)||[]).length;const size=chinese+Math.ceil((text.length-chinese)/3);$('profile-size').textContent=`当前编辑约 ${size} Token（长度提示） · 已载入版本 v${profileVersion??'…'}${profileDirty?' · 尚未保存':''}`;}
+for(const id of Object.values(profileFields))$(id).oninput=()=>{profileDirty=true;sizeHint();};
+function renderTraits(){
+  $('habits').replaceChildren();
+  if(!personaState.traits.length)$('habits').append(node('p','还没有已批准的长期习惯。可以先慢慢聊，让相处形成依据。','empty'));
+  for(const t of personaState.traits){
+    const card=node('article','','memory-card'+(!t.active?' invalid':''));card.dataset.traitId=t.id;
+    card.append(node('div',`#${t.id} · ${personaState.l1_fields[t.field]} · ${!t.active?'已撤回':t.needs_review?'暂停，待重新检查':'已生效 · 不衰减'}`,'meta'),node('div',t.content,'content'));
+    const proposal=personaState.proposals.find(p=>p.id===t.proposal_id);if(proposal)card.append(sourceDetails(proposal.sources));
+    if(t.active&&t.needs_review){const recheck=node('button','重新申请检查');recheck.onclick=()=>busy(recheck,async()=>{notice('正在重新检查原习惯…');const result=unwrap(await bridge.apiPost('persona/recheck',{person:current,id:t.id}));await loadPersona();showTab('approvals');notice(`已重新申请：${statuses[result.status]}。批准前仍保持暂停。`);});card.append(recheck);}
+    if(t.active){const revoke=node('button','撤回习惯');revoke.onclick=()=>busy(revoke,async()=>{if(!await askConfirmation(`撤回这条习惯？\n${t.content}`))return;unwrap(await bridge.apiPost('persona/trait',{person:current,id:t.id,action:'revoke'}));await loadPersona();notice('已撤回，后续回复不再注入这条习惯。');});card.append(revoke);}
+    $('habits').append(card);
+  }
+}
+function renderProposals(){
+  $('proposals').replaceChildren();const pending=personaState.proposals.filter(p=>p.status==='pending').length;$('pending-count').textContent=pending||'';
+  if(!personaState.proposals.length)$('proposals').append(node('p','暂时没有申请。Bot 提出具体修改后，会在这里等待你处理。','empty'));
+  for(const p of personaState.proposals){
+    const card=node('article','','memory-card proposal '+p.status);card.dataset.proposalId=p.id;
+    card.append(node('div',`#${p.id} · ${p.layer} ${fieldLabel(p)} · ${statuses[p.status]} · 基于 v${p.base_version}`,'meta'));
+    const diff=node('div','','diff');for(const [label,value] of [['修改前',p.old_value||'（新增）'],['拟修改为',p.new_value]]){const cell=node('div');cell.append(node('strong',label),node('p',value,'content'));diff.append(cell);}card.append(diff);
+    card.append(node('p',`修改理由：${p.reason}`),node('p',`一致性检查：${p.check_result.reason||'尚未完成'}`,'hint'),sourceDetails(p.sources));
+    if(p.status==='pending'){
+      const actions=node('div','','actions');for(const [action,label] of [['approve','批准这项修改'],['reject','拒绝']]){const button=node('button',label,action==='approve'?'primary':'');button.onclick=()=>busy(button,async()=>{
+        const question=action==='approve'?`确认授权这项修改？\n${p.layer} ${fieldLabel(p)}\n${p.old_value||'（新增）'}\n→ ${p.new_value}${p.layer==='L0'?'\n这会使旧申请过期，并暂停已有 L1。':''}`:'拒绝这项修改申请？';
+        if(!await askConfirmation(question))return;
+        unwrap(await bridge.apiPost('persona/decide',{person:current,id:p.id,action}));await loadPersona();notice(action==='approve'?'已批准并执行，下一条回复开始生效。':'已拒绝，人设未改变。');
+      });actions.append(button);}card.append(actions);
+    }
+    $('proposals').append(card);
+  }
+}
 function renderMemories(){
   $('counts').textContent=`核心 ${memories.filter(m=>m.kind==='core'&&m.status!=='invalid').length} · 活跃 ${memories.filter(m=>m.kind==='ordinary'&&m.status==='active').length} · 归档 ${memories.filter(m=>m.status==='archived').length}`;
   $('memories').replaceChildren();
   const visible=memories.filter(m=>filter==='all'||(filter==='core'?m.kind==='core'&&m.status!=='invalid':filter==='active'?m.kind==='ordinary'&&m.status==='active':m.status===filter));
-  if(!visible.length){const empty=document.createElement('p');empty.className='empty';empty.textContent=memories.length?'这个分类暂时没有记忆。':'还没有记忆。先聊几句，随后整理今天或等待每日整理。';$('memories').append(empty);}
+  if(!visible.length)$('memories').append(node('p',memories.length?'这个分类暂时没有记忆。':'还没有记忆。先聊几句，随后整理今天或等待每日整理。','empty'));
   for(const m of visible){
-    const article=document.createElement('article');article.className='memory-card '+m.status;
-    const meta=document.createElement('div');meta.className='meta';meta.textContent=`#${m.id} · ${m.kind==='core'?'核心长期记忆':`Lv.${m.level}`} · ${m.status==='active'?'活跃':m.status==='archived'?'归档':'已失效'}`;
-    const content=document.createElement('div');content.className='content';content.textContent=m.content;
-    const sources=document.createElement('details'),title=document.createElement('summary'),evidence=document.createElement('pre');title.textContent='来源证据';evidence.textContent=(m.sources||[]).map(s=>`消息 #${s.message_id}：${s.quote}`).join('\n');sources.append(title,evidence);article.append(meta,content,sources);
-    if(m.status!=='invalid'){const b=document.createElement('button');b.textContent='标记失效';b.onclick=async()=>{if(!confirm('将这条记忆标记为失效？原始记录会保留。'))return;try{unwrap(await bridge.apiPost('invalidate',{person:current,id:m.id}));await loadMemories();}catch(e){notice(e.message,true);}};article.append(b);}
+    const article=node('article','','memory-card '+m.status);
+    article.append(node('div',`#${m.id} · ${m.kind==='core'?'用户核心长期事实':`Lv.${m.level}`} · ${m.status==='active'?'活跃':m.status==='archived'?'归档':'已失效'}`,'meta'),node('div',m.content,'content'),sourceDetails(m.sources));
+    if(m.status!=='invalid'){const b=node('button','标记失效');b.onclick=()=>busy(b,async()=>{if(!await askConfirmation('将这条记忆标记为失效？原始记录会保留。'))return;unwrap(await bridge.apiPost('invalidate',{person:current,id:m.id}));await loadMemories();notice('记忆已标记失效。');});article.append(b);}
     $('memories').append(article);
   }
 }
 for(const button of document.querySelectorAll('[data-filter]'))button.onclick=()=>{filter=button.dataset.filter;for(const b of document.querySelectorAll('[data-filter]'))b.classList.toggle('active',b===button);renderMemories();};
 async function loadMemories(){
   const data=unwrap(await bridge.apiGet('state',{person:current}));current=data.person;memories=data.memories;
-  $('people').replaceChildren(...data.people.map(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=p.id==='webchat:owner'?'我（本地聊天）':p.id;return o;}));$('people').value=current;
+  $('people').replaceChildren(...data.people.map(p=>{const o=node('option',p.id==='webchat:owner'?'我（本地聊天）':p.id);o.value=p.id;return o;}));$('people').value=current;
   $('jobs').textContent=JSON.stringify({jobs:data.jobs,recent_contexts:data.runs},null,2);renderMemories();
 }
-async function loadSettings(){
-  const data=unwrap(await bridge.apiGet('settings')),s=data.settings;
-  $('bot-name').value=s.bot_name;$('persona').value=s.persona;$('memory-budget').value=s.memory_budget;$('history-budget').value=s.history_budget;
-  $('memory-instructions').textContent=data.memory_instructions;$('model').textContent=data.model;
+async function loadPersona(){
+  personaState=unwrap(await bridge.apiGet('persona',{person:current}));
+  if(!profileDirty){for(const [key,id] of Object.entries(profileFields))$(id).value=personaState.profile[key]||'';profileVersion=personaState.version;}
+  sizeHint();renderTraits();renderProposals();
 }
-for(const button of document.querySelectorAll('.save-settings'))button.onclick=async()=>{
-  const buttons=document.querySelectorAll('.save-settings');buttons.forEach(b=>b.disabled=true);
-  try{unwrap(await bridge.apiPost('settings',{bot_name:$('bot-name').value,persona:$('persona').value,memory_budget:Number($('memory-budget').value),history_budget:Number($('history-budget').value)}));notice('已保存，下一条回复开始生效。');}catch(e){notice(e.message,true);}finally{buttons.forEach(b=>b.disabled=false);}
-};
-$('refresh').onclick=async()=>{try{await loadMemories();notice('记忆已刷新，等级未重置。');}catch(e){notice(e.message,true);}};
-$('people').onchange=async()=>{current=$('people').value;try{await loadMemories();}catch(e){notice(e.message,true);}};
-$('consolidate').onclick=async()=>{if(!current){notice('先聊几句，再整理记忆。');return;}$('consolidate').disabled=true;notice('正在整理，将调用 DeepSeek…');try{const result=unwrap(await bridge.apiPost('consolidate',{person:current,day:$('day').value}));await loadMemories();notice(result.status==='complete'?'整理完成。':result.status==='up_to_date'?'这一天没有尚未整理的新消息。':`整理结果：${result.status}`);}catch(e){notice(e.message,true);}finally{$('consolidate').disabled=false;}};
-try{await Promise.all([loadSettings(),loadMemories()]);notice('设置与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}
+async function loadSettings(){const data=unwrap(await bridge.apiGet('settings')),s=data.settings;$('memory-budget').value=s.memory_budget;$('history-budget').value=s.history_budget;$('memory-instructions').textContent=data.memory_instructions;$('model').textContent=data.model;}
+async function loadWeb(updateSettings=true){const data=unwrap(await bridge.apiGet('web',{person:current}));if(updateSettings){$('web-enabled').checked=data.settings.enabled;$('web-calls').value=data.settings.max_calls;$('web-budget').value=data.settings.context_budget;}$('web-history').replaceChildren();if(!data.history.length)$('web-history').append(node('p','还没有联网记录。聊到需要核实的信息时，它会自主使用搜索。','empty'));for(const item of data.history){const card=node('article','','memory-card');card.append(node('div',`${item.action==='search'?'搜索':'读取网页'} · ${item.success?'成功':'未成功'} · ${item.created_at}`,'meta'),node('div',item.query_or_url,'content'));if(item.error)card.append(node('p',item.error,'hint'));$('web-history').append(card);}}
+$('save-profile').onclick=()=>busy($('save-profile'),async()=>{unwrap(await bridge.apiPost('persona/profile',{profile:readProfile(),version:profileVersion}));profileDirty=false;await loadPersona();notice('人设已保存，下一条回复开始生效。');});
+$('save-budgets').onclick=()=>busy($('save-budgets'),async()=>{unwrap(await bridge.apiPost('budgets',{memory_budget:Number($('memory-budget').value),history_budget:Number($('history-budget').value)}));notice('预算已保存，下一条回复开始生效。');});
+for(const button of document.querySelectorAll('.refresh-persona'))button.onclick=()=>busy(button,async()=>{await loadPersona();notice(profileDirty?'申请与习惯已刷新，保留尚未保存的人设草稿。':'人设、习惯与申请已刷新。');});
+$('refresh').onclick=()=>busy($('refresh'),async()=>{await loadMemories();notice('记忆已刷新，等级未重置。');});
+$('people').onchange=async()=>{current=$('people').value;try{await loadMemories();await loadPersona();await loadWeb(false);notice('已切换互动用户。');}catch(e){notice(e.message,true);}};
+$('save-web').onclick=()=>busy($('save-web'),async()=>{unwrap(await bridge.apiPost('web',{enabled:$('web-enabled').checked,max_calls:Number($('web-calls').value),context_budget:Number($('web-budget').value)}));notice('联网设置已保存，下一条回复生效。');});
+$('refresh-web').onclick=()=>busy($('refresh-web'),async()=>{await loadWeb(false);notice('联网记录已刷新。');});
+$('discover').onclick=()=>busy($('discover'),async()=>{if(!current)throw new Error('先聊几句，让系统有交流依据。');notice('正在检查长期习惯候选，将按需调用 DeepSeek…');const result=unwrap(await bridge.apiPost('persona/discover',{person:current}));await loadPersona();notice(result.status==='insufficient_evidence'?'跨日证据还不够，暂时不生成长期习惯。':result.candidates!==undefined?`检查完成，生成 ${result.candidates} 条候选；批准前不生效。`:'今天的候选检查已处理或正在进行，不重复生成。');});
+$('consolidate').onclick=()=>busy($('consolidate'),async()=>{if(!current)throw new Error('先聊几句，再整理记忆。');notice('正在整理，将调用 DeepSeek…');const result=unwrap(await bridge.apiPost('consolidate',{person:current,day:$('day').value}));await loadMemories();notice(result.status==='complete'?'整理完成。':result.status==='up_to_date'?'这一天没有尚未整理的新消息。':`整理结果：${result.status}`);});
+try{await Promise.all([loadSettings(),loadMemories()]);await Promise.all([loadPersona(),loadWeb()]);notice('人设、习惯与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}

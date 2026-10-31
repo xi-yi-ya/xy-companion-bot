@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from .persona import PersonaStore
 from .settings import DEFAULT_SETTINGS, validate_settings
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -46,11 +47,16 @@ class MemoryStore:
             kwargs={"row_factory": dict_row},
             timeout=8,
         )
+        self.personas = PersonaStore(self.pool)
 
     async def open(self):
         await self.pool.open(wait=True, timeout=10)
         async with self.pool.connection() as conn:
             await conn.execute(Path(__file__).with_name("schema.sql").read_text("utf-8"))
+            await self.personas.migrate(conn)
+            await conn.execute(
+                "UPDATE bot_settings SET payload=payload-'bot_name'-'persona' WHERE id=true"
+            )
 
     async def close(self):
         await self.pool.close()
@@ -60,16 +66,41 @@ class MemoryStore:
             row = await (
                 await conn.execute("SELECT payload FROM bot_settings WHERE id=true")
             ).fetchone()
-        return {**DEFAULT_SETTINGS, **(row["payload"] if row else {})}
+        values = {**DEFAULT_SETTINGS, **(row["payload"] if row else {})}
+        profile = (await self.personas.profile())["profile"]
+        values.update(bot_name=profile["name"], persona=profile["personality"])
+        return values
 
     async def save_settings(self, payload):
         values = validate_settings(payload)
         async with self.pool.connection() as conn:
+            profile = await (
+                await conn.execute(
+                    "SELECT payload,version FROM persona_profile WHERE id=true FOR UPDATE"
+                )
+            ).fetchone()
+            updated = {
+                **profile["payload"],
+                "name": values["bot_name"],
+                "personality": values["persona"],
+            }
+            await self.personas._write_profile(conn, updated, profile["version"])
             await conn.execute(
                 "INSERT INTO bot_settings(id,payload) VALUES (true,%s) ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload,updated_at=now()",
-                (Jsonb(values),),
+                (Jsonb({k: values[k] for k in ("memory_budget", "history_budget")}),),
             )
         return values
+
+    async def save_budgets(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {"memory_budget", "history_budget"}:
+            raise ValueError("预算字段不完整")
+        values = validate_settings({**DEFAULT_SETTINGS, **payload})
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO bot_settings(id,payload) VALUES (true,%s) ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload,updated_at=now()",
+                (Jsonb({key: values[key] for key in payload}),),
+            )
+        return payload
 
     async def backfill_vectors(self):
         if not self.embedder:

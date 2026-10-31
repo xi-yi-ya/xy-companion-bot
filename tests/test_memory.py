@@ -1,33 +1,10 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import psycopg
 import pytest
-import pytest_asyncio
-from psycopg import sql
-from psycopg.conninfo import make_conninfo
 
-from local_secrets import database_parameters
 from plugin.embeddings import LocalEmbedding
-from plugin.memory import TZ, MemoryStore, level
-
-
-@pytest_asyncio.fixture
-async def store():
-    params = database_parameters()
-    schema = "test_companion_" + uuid.uuid4().hex
-    with psycopg.connect(**params, autocommit=True) as admin:
-        admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
-    params["options"] = f"-csearch_path={schema}"
-    memory = MemoryStore(make_conninfo(**params))
-    try:
-        await memory.open()
-        yield memory
-    finally:
-        await memory.close()
-        with psycopg.connect(**database_parameters(), autocommit=True) as admin:
-            assert schema.startswith("test_companion_")
-            admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+from plugin.memory import TZ, level
 
 
 async def seed(
