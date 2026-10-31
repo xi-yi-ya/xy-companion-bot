@@ -82,6 +82,10 @@ class LocalWebMiddleware:
             return await FileResponse(
                 WEB / path.rsplit("/", 1)[1], headers={"Cache-Control": "no-store"}
             )(scope, receive, send)
+        if path == "/companion/qq" and scope["type"] == "http":
+            return await FileResponse(WEB / "qq.html", headers={"Cache-Control": "no-store"})(
+                scope, receive, send
+            )
         entry = scope["type"] == "http" and (
             path in ("/", "/index.html")
             or (

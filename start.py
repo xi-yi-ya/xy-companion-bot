@@ -42,6 +42,7 @@ def prepare():
         download()
     os.environ["ASTRBOT_ROOT"] = str(RUNTIME)
     os.environ["COMPANION_INSTANCE_ID"] = instance_id(ROOT)
+    os.environ["COMPANION_QQ_DIR"] = str(RUNTIME / "qq")
     sys.path.insert(0, str(SOURCE))
     (RUNTIME / "data" / "plugins").mkdir(parents=True, exist_ok=True)
     shutil.copytree(
@@ -117,6 +118,9 @@ def prepare():
     compression.update(max_turns=-1, fallback_max_tokens=1048576)
     config["agent_runner"]["config"]["misc"]["max_steps"] = 10
     config["provider_settings"]["datetime_system_prompt"] = False
+    from plugin.qq import configure_platform
+
+    configure_platform(config, RUNTIME / "qq")
     config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2), "utf-8")
     return settings
 

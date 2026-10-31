@@ -66,6 +66,17 @@ async def test_local_mode_rejects_remote_peer(app):
         base_url="http://127.0.0.1:6185",
     ) as client:
         assert (await client.get("/")).status_code == 403
+        assert (await client.get("/companion/qq")).status_code == 403
+
+
+async def test_qq_login_page_is_local_and_does_not_contain_a_hardcoded_secret(app):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://127.0.0.1:6185"
+    ) as client:
+        page = await client.get("/companion/qq")
+        assert page.status_code == 200 and "QQ 登录" in page.text
+        assert "bind_command" in page.text and "setInterval" in page.text
+        assert page.headers["cache-control"] == "no-store"
 
 
 async def test_opaque_frame_exception_is_limited_to_read_only_scoped_assets(app):

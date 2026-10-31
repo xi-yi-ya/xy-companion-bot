@@ -5,6 +5,7 @@ import json
 import os
 from datetime import UTC, date, datetime, timedelta
 
+import httpx
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain
@@ -13,6 +14,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.web import error_response, json_response, request
 from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import ToolSet
+from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
 
 from .activity import ActivityTracker
 from .continuity import SUMMARY_PROMPT
@@ -20,6 +22,7 @@ from .costs import monthly_scenarios
 from .embeddings import LocalEmbedding
 from .memory import TZ, MemoryStore, level
 from .persona import L0_FIELDS, L1_FIELDS, build_system_prompt
+from .qq import QQBridge, guard_waking_stage
 from .token_counting import counter, tokens
 from .usage import SCOPE, UsageRecorder, usage_scope
 from .web_access import WEB_POLICY, WebAccess, WebTurn
@@ -60,7 +63,7 @@ PERSONA_DISCOVERY = """根据跨日用户交流，为陪伴 Bot 提出最多 3 �
 替换已有习惯时才填写 target_trait_id。所有候选都必须经过用户审批，不能自称已获授权。"""
 
 
-@register("astrbot_plugin_companion_memory", "Owner", "PostgreSQL companion memory", "0.3.0")
+@register("astrbot_plugin_companion_memory", "Owner", "PostgreSQL companion memory", "0.4.0")
 class CompanionMemory(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -68,6 +71,7 @@ class CompanionMemory(Star):
         self.web = WebAccess(self.store.pool)
         self.activity = ActivityTracker()
         self.usage = UsageRecorder(self.store.pool, self.store.policy)
+        self.qq = QQBridge(os.environ.get("COMPANION_QQ_DIR", "qq"), self.store.pool)
         self.ready = False
         self.task = None
         self.provider_id = os.environ.get("COMPANION_PROVIDER_ID", "companion_deepseek")
@@ -88,6 +92,8 @@ class CompanionMemory(Star):
             ("web", self.save_web, ["POST"]),
             ("status", self.page_status, ["GET"]),
             ("metrics", self.page_metrics, ["GET"]),
+            ("qq", self.page_qq, ["GET"]),
+            ("qq/refresh", self.refresh_qq, ["POST"]),
         ]:
             context.register_web_api(
                 f"/astrbot_plugin_companion_memory/{endpoint}",
@@ -97,11 +103,13 @@ class CompanionMemory(Star):
             )
 
     async def initialize(self):
+        guard_waking_stage(WakingCheckStage, self.qq)
         await self.store.open()
         self.store.embedder = await asyncio.to_thread(
             LocalEmbedding, os.environ["COMPANION_EMBEDDING_DIR"]
         )
         self.ready = True
+        await self.qq.open()
         self.task = asyncio.create_task(self.daily_loop())
         logger.info("Companion PostgreSQL memory initialized")
 
@@ -113,6 +121,7 @@ class CompanionMemory(Star):
             self.usage.install(provider)
 
     async def terminate(self):
+        await self.qq.close()
         if self.task:
             self.task.cancel()
             try:
@@ -247,6 +256,26 @@ class CompanionMemory(Star):
                 },
             )
         )["candidates"]
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
+    async def qq_access(self, event: AstrMessageEvent):
+        if event.get_platform_name() != "aiocqhttp":
+            return
+        if not event.is_private_chat():
+            event.stop_event()
+            return
+        try:
+            result = await self.qq.authorize(str(event.get_sender_id()), event.message_str)
+        except Exception as exc:
+            event.stop_event()
+            logger.error("QQ pairing failed: %s", type(exc).__name__)
+            return
+        if result != "allow":
+            event.stop_event()
+            if result == "paired":
+                yield event.plain_result(
+                    "绑定好了。之后这里和本地 Web 会共用我们的记忆与习惯，可以直接聊。"
+                )
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=100)
     async def receive(self, event: AstrMessageEvent):
@@ -568,6 +597,17 @@ class CompanionMemory(Star):
             if summary:
                 data["summaries"] = [summary]
         return json_response(json.loads(json.dumps(data, default=str, ensure_ascii=False)))
+
+    async def page_qq(self):
+        return json_response(self.qq.snapshot())
+
+    async def refresh_qq(self):
+        try:
+            await self.qq.refresh()
+            await self.qq.poll()
+            return json_response(self.qq.snapshot())
+        except (httpx.HTTPError, ValueError) as exc:
+            return error_response(str(exc))
 
     async def page_web(self):
         person = request.query.get("person", "")

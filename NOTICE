@@ -15,6 +15,13 @@ Pinned Windows PG18 binaries: https://github.com/andreiramani/pgvector_pgsql_win
 
 Third-party models, binaries, runtime data and credentials are not included in this repository.
 
+QQ integration downloads NapCatQQ v4.18.42 locally (not redistributed here).
+https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.42
+NapCat's upstream Limited Redistribution License (non-commercial):
+https://github.com/NapNeko/NapCatQQ/blob/v4.18.42/LICENSE
+The optional official Windows Node bundle contains Tencent QQ native components and Node.js;
+their local runtime files and QQ session data are excluded from version control.
+
 Desktop GUI: PySide6-Essentials / Qt for Python 6.12.0 and shiboken6 (LGPL-3.0/GPL commercial alternatives).
 https://doc.qt.io/qtforpython-6/
 Shared-library license texts are copied alongside the local GUI build.

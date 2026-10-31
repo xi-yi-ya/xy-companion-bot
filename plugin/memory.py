@@ -157,6 +157,14 @@ class MemoryStore:
         person = f"{platform}:{account}"
         at = at or datetime.now(UTC)
         async with self.pool.connection() as conn:
+            linked = await (
+                await conn.execute(
+                    "SELECT person_id FROM platform_accounts WHERE platform=%s AND account_id=%s",
+                    (platform, account),
+                )
+            ).fetchone()
+            if linked:
+                person = linked["person_id"]
             await conn.execute(
                 "INSERT INTO persons(id) VALUES (%s) ON CONFLICT DO NOTHING", (person,)
             )
