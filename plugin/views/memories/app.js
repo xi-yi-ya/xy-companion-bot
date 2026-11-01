@@ -94,6 +94,26 @@ async function loadQQChat(updateSettings=true){
 $('save-qq-chat').onclick=()=>busy($('save-qq-chat'),async()=>{unwrap(await bridge.apiPost('qq/chat',{private_quiet_seconds:Number($('qq-private-quiet').value),group_scan_enabled:$('group-scan-enabled').checked,group_scan_interval:Number($('group-scan-interval').value),group_ids:$('group-scan-ids').value.split(/[\s,，;；]+/).filter(Boolean),quote_mode:$('qq-quote-mode').value}));await loadQQChat();notice('QQ 聊天方式已保存。群聊会按新间隔查看消息，不强制回复。');});
 if(new URLSearchParams(location.search).get('tab')==='qq')showTab('qq');
 let qqPolling=false;
+async function loadQzone(updateSettings=true){
+ const data=unwrap(await bridge.apiGet('qzone')),s=data.settings,state=data.state;
+ if(updateSettings){$('qzone-enabled').checked=s.enabled;$('qzone-share').checked=s.share_enabled;$('qzone-min').value=s.min_minutes;$('qzone-max').value=s.max_minutes;}
+ $('qzone-state').textContent=!s.enabled?'自动浏览已关闭':!data.qq_ready?'等待 QQ 小号在线':state?.current_run?'正在浏览和阅读':state?.last_error?state.last_error:state?.due_at?`下次浏览：${contactTime(state.due_at)}`:'正在安排第一次浏览';
+ $('qzone-detail').textContent=`随机间隔 ${s.min_minutes}～${s.max_minutes} 分钟；${s.share_enabled?'已开启分享候选':'仅自己阅读，不主动分享'}。最近成功：${contactTime(state?.last_success)}。`;
+ $('qzone-candidates').replaceChildren();
+ const labels={pending:'等待合适时机分享',sending:'正在发送',shared:'已分享',unknown:'发送结果未确认，不重复发送',dismissed:'已略过'};
+ if(!data.candidates.length)$('qzone-candidates').append(node('p','还没有分享候选。她可以觉得这次没什么值得分享。','empty'));
+ for(const item of data.candidates){const p=item.payload,card=node('article','','memory-card');card.append(node('div',`${p.nickname||p.author} · ${labels[item.status]||item.status}`,'meta'),node('div',p.body||'图片动态','content'),node('p',item.note,'hint'),node('p',item.reason,'hint'));if(p.url?.startsWith('https://user.qzone.qq.com/')){const link=node('a','查看原动态');link.href=p.url;link.target='_blank';link.rel='noopener noreferrer';card.append(link);}$('qzone-candidates').append(card);}
+ $('qzone-runs').replaceChildren();
+ if(!data.runs.length)$('qzone-runs').append(node('p','尚无浏览记录。','empty'));
+ const states={reading:'正在浏览',complete:'完成',error:'未完成',cancelled:'设置已变更，本轮取消'};
+ for(const item of data.runs){const card=node('article','','memory-card');card.append(node('div',`${contactTime(item.started_at)} · ${states[item.status]||item.status}`,'meta'),node('p',item.error||`读到 ${item.post_count} 条动态，新内容 ${item.new_count} 条，阅读整理 ${item.reviewed_count} 条。`,'hint'));$('qzone-runs').append(card);}
+}
+$('save-qzone').onclick=()=>busy($('save-qzone'),async()=>{unwrap(await bridge.apiPost('qzone',{enabled:$('qzone-enabled').checked,share_enabled:$('qzone-share').checked,min_minutes:Number($('qzone-min').value),max_minutes:Number($('qzone-max').value)}));await loadQzone();notice('空间设置已保存，下一次浏览时间已重新安排。');});
+$('refresh-qzone').onclick=()=>busy($('refresh-qzone'),async()=>{await loadQzone(false);notice('空间记录已刷新。');});
+$('check-qzone').onclick=()=>busy($('check-qzone'),async()=>{notice('正在用小号登录态检查空间，只读取…');const result=unwrap(await bridge.apiPost('qzone/check',{}));notice(result.ready?`空间可读，当前读到 ${result.post_count} 条动态。`:result.message,!result.ready);});
+$('browse-qzone').onclick=()=>busy($('browse-qzone'),async()=>{notice('正在浏览空间并整理新内容…');const result=unwrap(await bridge.apiPost('qzone/browse',{}));await loadQzone(false);notice(result.status==='complete'?`本次浏览完成，发现 ${result.new} 条新动态。`:result.error||'暂未开始浏览，请确认已开启、QQ 在线且没有其他浏览任务。',result.status==='error');});
+let qzonePolling=false;
+setInterval(async()=>{if($('qzone-panel').hidden||qzonePolling)return;qzonePolling=true;try{await loadQzone(false);}catch(e){$('qzone-state').textContent='正在等待 Bot 重新连接…';}finally{qzonePolling=false;}},15000);
 let approvalPolling=false;
 setInterval(async()=>{if($('approvals-panel').hidden||approvalPolling||document.querySelector('dialog[open]'))return;approvalPolling=true;try{await loadPersona();}catch(e){notice('修改审批暂时无法刷新：'+e.message,true);}finally{approvalPolling=false;}},15000);
 function contactTime(value){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';}
@@ -134,4 +154,4 @@ $('save-web').onclick=()=>busy($('save-web'),async()=>{unwrap(await bridge.apiPo
 $('refresh-web').onclick=()=>busy($('refresh-web'),async()=>{await loadWeb(false);notice('联网记录已刷新。');});
 $('discover').onclick=()=>busy($('discover'),async()=>{if(!current)throw new Error('先聊几句，让系统有交流依据。');notice('正在检查长期习惯候选，将按需调用 DeepSeek…');const result=unwrap(await bridge.apiPost('persona/discover',{person:current}));await loadPersona();notice(result.status==='insufficient_evidence'?'跨日证据还不够，暂时不生成长期习惯。':result.candidates!==undefined?`检查完成，生成 ${result.candidates} 条候选；批准前不生效。`:'今天的候选检查已处理或正在进行，不重复生成。');});
 $('consolidate').onclick=()=>busy($('consolidate'),async()=>{if(!current)throw new Error('先聊几句，再整理记忆。');notice('正在整理，将调用 DeepSeek…');const result=unwrap(await bridge.apiPost('consolidate',{person:current,day:$('day').value}));await loadMemories();notice(result.status==='complete'?'整理完成。':result.status==='up_to_date'?'这一天没有尚未整理的新消息。':`整理结果：${result.status}`);});
-try{await Promise.all([loadSettings(),loadMemories()]);await Promise.all([loadPersona(),loadWeb(),loadMetrics(),loadQQ(),loadQQChat(),loadContact()]);notice('人设、习惯与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}
+try{await Promise.all([loadSettings(),loadMemories()]);await Promise.all([loadPersona(),loadWeb(),loadMetrics(),loadQQ(),loadQQChat(),loadContact(),loadQzone()]);notice('人设、习惯与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}

@@ -2,9 +2,21 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot 设置</title><link rel="stylesheet" href="./style.css"><script src="/api/plugin/page/bridge-sdk.js"></script></head>
 <body><main>
   <header class="top"><div><small>YOUR LOCAL COMPANION</small><h1>Bot 设置</h1><p>人设决定它是谁，记忆保存你们经历过的事。</p></div><span id="model" class="badge"></span></header>
-  <nav class="tabs" aria-label="Bot 设置分类"><button class="tab active" data-tab="persona" aria-selected="true">L0 固定人设</button><button class="tab" data-tab="habits" aria-selected="false">L1 长期习惯</button><button class="tab" data-tab="approvals" aria-selected="false">修改审批 <span id="pending-count"></span></button><button class="tab" data-tab="memory" aria-selected="false">L2 记忆</button><button class="tab" data-tab="rules" aria-selected="false">记忆规则</button><button class="tab" data-tab="web" aria-selected="false">自主上网</button><button class="tab" data-tab="metrics" aria-selected="false">用量与连续性</button><button class="tab" data-tab="proactive" aria-selected="false">主动联系</button><button class="tab" data-tab="qq" aria-selected="false">QQ 连接</button></nav>
+  <nav class="tabs" aria-label="Bot 设置分类"><button class="tab active" data-tab="persona" aria-selected="true">L0 固定人设</button><button class="tab" data-tab="habits" aria-selected="false">L1 长期习惯</button><button class="tab" data-tab="approvals" aria-selected="false">修改审批 <span id="pending-count"></span></button><button class="tab" data-tab="memory" aria-selected="false">L2 记忆</button><button class="tab" data-tab="rules" aria-selected="false">记忆规则</button><button class="tab" data-tab="web" aria-selected="false">自主上网</button><button class="tab" data-tab="metrics" aria-selected="false">用量与连续性</button><button class="tab" data-tab="proactive" aria-selected="false">主动联系</button><button class="tab" data-tab="qq" aria-selected="false">QQ 连接</button><button class="tab" data-tab="qzone" aria-selected="false">QQ 空间</button></nav>
   <div class="scope"><label class="compact">互动用户<select id="people" aria-label="互动用户"></select></label><p>固定人设对所有会话生效；习惯和记忆按用户分别保存。</p></div>
   <p id="notice" role="status">正在读取设置…</p>
+  <section id="qzone-panel" class="panel" hidden>
+    <div class="section-heading"><div><h2>偶尔刷刷 QQ 空间</h2><p>读取小号能看到的动态，按她的人设与共同话题留下阅读笔记。</p></div><button class="primary" id="save-qzone">保存空间设置</button></div>
+    <label class="toggle"><input id="qzone-enabled" type="checkbox">开启自动浏览 QQ 空间</label>
+    <div class="budget-grid"><label>最短浏览间隔（分钟）<input id="qzone-min" type="number" min="1" max="1440" step="1"></label><label>最长浏览间隔（分钟）<input id="qzone-max" type="number" min="1" max="1440" step="1"></label></div>
+    <label class="toggle"><input id="qzone-share" type="checkbox">有意思的内容加入私聊分享候选</label>
+    <p class="hint">每次浏览后随机选择下一次时间，默认 15～30 分钟。重复动态不反复读模型；作者、原文、来源和阅读笔记保存到本机 PostgreSQL。别人的说说不当成你的经历，普通记忆衰减规则保持原样。</p>
+    <p class="hint">分享沿用“主动联系”的间隔和免打扰：发过一条后等你回复，不会每刷一次就来打扰。仅开放浏览，点赞、评论和发说说未开放。</p>
+    <div class="callout"><strong id="qzone-state" role="status">正在读取浏览状态…</strong><p id="qzone-detail"></p></div>
+    <div class="actions"><button id="refresh-qzone">刷新记录</button><button id="check-qzone">检查空间登录</button><button id="browse-qzone">现在浏览一次</button></div>
+    <h3>想与你分享的内容</h3><div id="qzone-candidates"></div>
+    <h3>最近的浏览</h3><div id="qzone-runs"></div>
+  </section>
   <section id="proactive-panel" class="panel" hidden>
     <div class="section-heading"><div><h2>偶尔来找你</h2><p>沿用你们的人设、记忆和聊天。只联系已绑定的 QQ 主号。</p></div><button class="primary" id="save-contact">保存主动联系设置</button></div>
     <label class="toggle"><input id="contact-enabled" type="checkbox">开启主动联系</label>

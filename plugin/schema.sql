@@ -209,6 +209,12 @@ CREATE TABLE IF NOT EXISTS message_attachments(
 );
 ALTER TABLE message_attachments DROP CONSTRAINT IF EXISTS message_attachments_message_id_kind_name_key;
 CREATE INDEX IF NOT EXISTS attachments_message ON message_attachments(message_id);
+CREATE TABLE IF NOT EXISTS qzone_settings(id boolean PRIMARY KEY DEFAULT true CHECK(id),payload jsonb NOT NULL,revision bigint NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS qzone_state(id boolean PRIMARY KEY DEFAULT true CHECK(id),account_qq text NOT NULL,current_run uuid,lease_until timestamptz,due_at timestamptz,last_browse timestamptz,last_success timestamptz,last_error text);
+CREATE TABLE IF NOT EXISTS qzone_runs(id uuid PRIMARY KEY,account_qq text NOT NULL,status text NOT NULL CHECK(status IN ('reading','complete','error','cancelled')),started_at timestamptz NOT NULL,finished_at timestamptz,post_count integer NOT NULL DEFAULT 0,new_count integer NOT NULL DEFAULT 0,reviewed_count integer NOT NULL DEFAULT 0,error text);
+CREATE TABLE IF NOT EXISTS qzone_posts(key text PRIMARY KEY,account_qq text NOT NULL,author_qq text NOT NULL,payload jsonb NOT NULL,posted_at timestamptz,first_seen timestamptz NOT NULL,last_seen timestamptz NOT NULL,reviewed boolean NOT NULL DEFAULT false,review jsonb);
+CREATE TABLE IF NOT EXISTS qzone_candidates(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,post_key text NOT NULL UNIQUE REFERENCES qzone_posts(key),account_qq text NOT NULL,score double precision NOT NULL CHECK(score BETWEEN 0 AND 1),note text NOT NULL,reason text NOT NULL,status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','shared','unknown','dismissed')),delivery_id uuid REFERENCES proactive_deliveries(id),created_at timestamptz NOT NULL);
+CREATE INDEX IF NOT EXISTS qzone_candidate_pending ON qzone_candidates(account_qq,status,created_at);
 CREATE OR REPLACE VIEW message_context AS
 SELECT m.id,m.person_id,m.conversation_id,m.event_id,m.role,
     m.content || coalesce(a.body,'') AS content,m.created_at,

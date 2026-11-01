@@ -198,6 +198,11 @@ class ContactStore:
             ).fetchall()
             for row in rows:
                 uncertain = row["status"] == "sending"
+                if uncertain:
+                    await conn.execute(
+                        "UPDATE qzone_candidates SET status='unknown' WHERE delivery_id=%s AND status='sending'",
+                        (row["id"],),
+                    )
                 await conn.execute(
                     "UPDATE proactive_deliveries SET status=%s,error='interrupted',updated_at=now() WHERE id=%s",
                     ("unknown" if uncertain else "failed", row["id"]),
@@ -303,8 +308,30 @@ class ContactStore:
                     "SELECT max(id) AS n FROM messages WHERE person_id=%s AND role='user'", (OWNER,)
                 )
             ).fetchone()
+            candidate_id = result.get("qzone_candidate_id")
+            qzone_ok = True
+            if candidate_id is not None:
+                config = await (
+                    await conn.execute(
+                        "SELECT payload,revision FROM qzone_settings WHERE id=true FOR SHARE"
+                    )
+                ).fetchone()
+                candidate = await (
+                    await conn.execute(
+                        "SELECT id FROM qzone_candidates WHERE id=%s AND status='pending' AND account_qq=%s FOR UPDATE",
+                        (candidate_id, str(run["target"].get("self_id", ""))),
+                    )
+                ).fetchone()
+                qzone_ok = bool(
+                    config
+                    and config["payload"].get("enabled")
+                    and config["payload"].get("share_enabled")
+                    and config["revision"] == result.get("qzone_revision")
+                    and candidate
+                )
             if (
                 not settings["enabled"]
+                or not qzone_ok
                 or not state
                 or state["current_run"] != run["id"]
                 or state["last_user_id"] != run["source_user_id"]
@@ -322,6 +349,11 @@ class ContactStore:
                     )
                 return False
             # Consume the cycle BEFORE network I/O. Uncertain delivery never retries.
+            if candidate_id is not None:
+                await conn.execute(
+                    "UPDATE qzone_candidates SET status='sending',delivery_id=%s WHERE id=%s",
+                    (run["id"], candidate_id),
+                )
             await conn.execute(
                 "UPDATE proactive_deliveries SET status='sending',text=%s,reason=%s,updated_at=now() WHERE id=%s",
                 (result["text"], result["reason"][:500], run["id"]),
@@ -335,6 +367,10 @@ class ContactStore:
     async def finish(self, run, text, now, receipt=None, error=None):
         async with self.pool.connection() as conn:
             await self.lock(conn)
+            await conn.execute(
+                "UPDATE qzone_candidates SET status=%s WHERE delivery_id=%s AND status='sending'",
+                ("unknown" if error else "shared", run["id"]),
+            )
             if error is None:
                 await conn.execute(
                     "INSERT INTO messages(person_id,conversation_id,event_id,role,content,created_at,token_count) VALUES(%s,%s,%s,'assistant',%s,%s,%s) ON CONFLICT DO NOTHING",

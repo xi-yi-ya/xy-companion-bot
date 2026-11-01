@@ -1,7 +1,7 @@
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-exclude = ["vendor", "runtime", ".venv"]
+exclude = ["vendor", "runtime", ".venv", "plugin/qzone_read"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

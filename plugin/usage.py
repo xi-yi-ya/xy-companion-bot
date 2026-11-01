@@ -2,13 +2,16 @@
 
 import asyncio
 import contextvars
+import inspect
 import json
+import logging
 import time
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from psycopg.types.json import Jsonb
+from psycopg_pool import PoolClosed
 
 from .token_counting import counter
 
@@ -55,6 +58,18 @@ def read_usage(usage):
 class UsageRecorder:
     def __init__(self, pool, policy):
         self.pool, self.policy = pool, policy
+        self.resources = []
+
+    def uninstall(self):
+        for resource, wrapper, original in self.resources:
+            if (
+                getattr(resource, "_companion_usage_recorder", None) is self
+                and resource.create is wrapper
+            ):
+                resource.create = original
+                resource._companion_metered = False
+                resource._companion_usage_recorder = None
+        self.resources.clear()
 
     async def save(self, uid, scope, start, elapsed, first, result, usage, error, planned):
         raw, inp, out, hit, miss = read_usage(usage)
@@ -104,9 +119,29 @@ class UsageRecorder:
             provider._handle_api_error = handle_error
             provider._companion_no_context_pop = True
         resource = provider.client.chat.completions
-        if getattr(resource, "_companion_metered", False):
+        if getattr(resource, "_companion_usage_recorder", None) is self:
             return
-        original = resource.create
+        original = getattr(resource, "_companion_original_create", None)
+        if original is None:
+            original = resource.create
+            # Migrate wrappers left by versions before lifecycle ownership was
+            # recorded. Recover our own original SDK call, never stack wrappers.
+            if getattr(resource, "_companion_metered", False) and inspect.isfunction(original):
+                recovered = inspect.getclosurevars(original).nonlocals.get("original")
+                if callable(recovered) and original.__module__.endswith(".usage"):
+                    original = recovered
+
+        async def record(*args):
+            active = getattr(resource, "_companion_usage_recorder", None)
+            if active is None:
+                return
+            try:
+                await active.save(*args)
+            except PoolClosed:
+                # A completed model response must survive telemetry shutdown.
+                logging.getLogger(__name__).warning(
+                    "Usage pool closed during reload; response preserved"
+                )
 
         async def create(*args, **kwargs):
             policy = await self.policy.get()
@@ -129,7 +164,7 @@ class UsageRecorder:
                 )
             )
             if planned + maximum + policy["safety_reserve"] > policy["model_context"]:
-                await self.save(
+                await record(
                     uuid.uuid4(),
                     scope,
                     datetime.now(UTC),
@@ -147,7 +182,7 @@ class UsageRecorder:
             try:
                 response = await original(*args, **kwargs)
             except BaseException as exc:
-                await self.save(
+                await record(
                     uid,
                     scope,
                     start,
@@ -160,7 +195,7 @@ class UsageRecorder:
                 )
                 raise
             if not kwargs.get("stream"):
-                await self.save(
+                await record(
                     uid,
                     scope,
                     start,
@@ -197,7 +232,7 @@ class UsageRecorder:
                     raise
                 finally:
                     await response.close()
-                    await self.save(
+                    await record(
                         uid,
                         scope,
                         start,
@@ -213,6 +248,9 @@ class UsageRecorder:
 
         resource.create = create
         resource._companion_metered = True
+        resource._companion_usage_recorder = self
+        resource._companion_original_create = original
+        self.resources.append((resource, create, original))
 
     async def metrics(self):
         async with self.pool.connection() as conn:
