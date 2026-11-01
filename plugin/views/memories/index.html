@@ -25,7 +25,16 @@
     <div class="qq-login"><img id="qq-qr" alt="Bot QQ 登录二维码" width="260" height="260" hidden><p>使用要交给 Bot 的 QQ 小号，在手机 QQ 中扫码并确认登录。此页会自动更新二维码，可留到早上再扫。</p></div>
     <div id="qq-pairing" class="callout" hidden><strong>第一次使用：绑定你的主号</strong><p>登录后，用平常和 Bot 聊天的主号加小号为好友，再把下面这一行私聊发给 Bot。完成后，两边会共用同一份陪伴记忆。</p><pre id="qq-bind"></pre><p class="hint">绑定口令只在本机页面显示。绑定前不读取聊天进模型；绑定后仅响应已绑定主号的私聊。</p></div>
     <p id="qq-owner" class="hint"></p>
-    <p class="hint">私聊仅接已绑定主号；群内成员明确 @Bot 才触发回答。QQ 连发消息停顿 1 秒后合并回复，群聊按群和发送人隔离。回复会引用最后一条消息，群回复同时 @ 提问者；被引用的正文、图片和文件可作为材料理解。</p>
+    <h3>聊天方式</h3>
+    <label>私聊消息合并窗口（秒）<input id="qq-private-quiet" type="number" min="0.3" max="10" step="0.1"></label>
+    <p class="hint">私聊在最后一条消息后等待这段时间，再一起理解；默认 3.5 秒，持续连发最多收集 15 秒。生成期间有新输入时，过时回复不再发送，输入仍保存在记忆库中。</p>
+    <label class="toggle"><input id="group-scan-enabled" type="checkbox">无需 @，定时查看群聊新消息并自主决定是否接话</label>
+    <div class="budget-grid"><label>群聊扫描间隔（秒）<input id="group-scan-interval" type="number" min="1" max="600" step="1"></label><label>QQ 回复引用<select id="qq-quote-mode"><option value="adaptive">按需引用，由 Bot 选择</option><option value="never">不引用</option><option value="always">总是引用</option></select></label></div>
+    <label for="group-scan-ids">参与群号（可选，每行一个或用逗号分隔）</label><textarea id="group-scan-ids" rows="3" maxlength="1500" placeholder="留空表示所有已加入的群"></textarea>
+    <p class="hint">没有新消息不调用模型；有新消息时先判断是否值得接话，可以保持安静。群内不同成员的发言一起理解并标明说话人，群记忆与私人记忆隔离。关闭扫描后恢复仅 @Bot 触发。私聊仍只接已绑定主号。</p>
+    <button class="primary" id="save-qq-chat">保存聊天方式</button>
+    <p class="hint">引用读取继续可用；按需模式下普通接话不带引用，明确指向某条输入时才引用。自主接话不强制 @ 成员，回应明确 @Bot 的提问时保留 @。</p>
+    <h3>最近的群聊扫描</h3><div id="group-scan-history"></div>
     <p class="hint">QQ 客户端随 Bot 启停，登录状态保存在项目本地目录。电脑和 Bot 在线时才能聊天。</p>
     <p><a href="/companion/qq" target="_blank" rel="noopener">打开独立扫码页</a></p>
   </section>

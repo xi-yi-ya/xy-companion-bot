@@ -29,6 +29,7 @@ from .attachments import (
 from .continuity import SUMMARY_PROMPT
 from .costs import monthly_scenarios
 from .embeddings import LocalEmbedding
+from .group_scan import GroupScanner
 from .memory import TZ, MemoryStore, level
 from .persona import L0_FIELDS, L1_FIELDS, build_system_prompt, traits_hash
 from .persona_requests import (
@@ -41,7 +42,8 @@ from .persona_requests import (
 )
 from .proactive import CONTACT_PROMPT, OWNER, ContactService
 from .qq import PLATFORM_ID, QQBridge, guard_waking_stage
-from .qq_chat import QQIngress, meaningful, raw_content, record_platform, snapshot
+from .qq_chat import QQIngress, meaningful, raw_content, record_account, record_platform, snapshot
+from .qq_policy import choose_quote, quote_target, recover_quote_reply
 from .quoted_messages import prepare_quotes
 from .token_counting import counter, tokens
 from .usage import SCOPE, UsageRecorder, usage_scope
@@ -84,7 +86,7 @@ PERSONA_DISCOVERY = """根据跨日用户交流，为陪伴 Bot 提出最多 3 �
 替换已有习惯时才填写 target_trait_id。所有候选都必须经过用户审批，不能自称已获授权。"""
 
 
-@register("astrbot_plugin_companion_memory", "Owner", "PostgreSQL companion memory", "0.6.0")
+@register("astrbot_plugin_companion_memory", "Owner", "PostgreSQL companion memory", "0.7.0")
 class CompanionMemory(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -96,7 +98,8 @@ class CompanionMemory(Star):
         )
         self.usage = UsageRecorder(self.store.pool, self.store.policy)
         self.qq = QQBridge(os.environ.get("COMPANION_QQ_DIR", "qq"), self.store.pool)
-        self.qq_ingress = QQIngress(self.qq, self.capture_message)
+        self.qq_ingress = QQIngress(self.qq, self.capture_message, policy=self.store.qq_chat)
+        self.group_scan = GroupScanner(self.store, self.generate_group_decision)
         self.contact_service = ContactService(
             self.store.contact,
             self.generate_contact,
@@ -127,6 +130,8 @@ class CompanionMemory(Star):
             ("metrics", self.page_metrics, ["GET"]),
             ("qq", self.page_qq, ["GET"]),
             ("qq/refresh", self.refresh_qq, ["POST"]),
+            ("qq/chat", self.page_qq_chat, ["GET"]),
+            ("qq/chat", self.save_qq_chat, ["POST"]),
             ("proactive", self.page_contact, ["GET"]),
             ("proactive", self.save_contact, ["POST"]),
             ("proactive/preview", self.preview_contact, ["POST"]),
@@ -211,7 +216,7 @@ class CompanionMemory(Star):
             response = await self.context.llm_generate(
                 chat_provider_id=self.provider_id,
                 prompt=json.dumps(payload, ensure_ascii=False),
-                system_prompt=EXTRACTION,
+                system_prompt=EXTRACTION + ("\n当前是多人群聊记录：每条消息的群成员标识是事实归属，提取内容必须保留具体说话人，不得合并成同一个用户的偏好。" if any(":room:" in r["person_id"] for r in rows) else ""),
             )
         text = response.completion_text.strip()
         if text.startswith("```"):
@@ -319,7 +324,7 @@ class CompanionMemory(Star):
             raise ValueError("记忆数据库尚未就绪")
         return await self.store.record(
             record_platform(event),
-            str(event.get_sender_id()),
+            record_account(event),
             str(event.unified_msg_origin),
             str(event.message_obj.message_id),
             "user",
@@ -329,6 +334,9 @@ class CompanionMemory(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=100)
     async def receive(self, event: AstrMessageEvent):
+        if not self.qq_ingress.current(event):
+            event.stop_event()
+            return
         if not event.is_private_chat() and event.get_platform_name() != "aiocqhttp":
             return
         if not self.ready:
@@ -342,6 +350,9 @@ class CompanionMemory(Star):
                 return
             msg = event.get_extra("companion_message") or await self.capture_message(event)
             event.set_extra("companion_message", msg)
+            if event.get_extra("companion_group_scan") and not await self.group_scan.choose(event):
+                event.stop_event()
+                return
             if event.is_private_chat() and needs_verified_output(event.message_str):
                 # WebChat normally forces streaming. A persona-request receipt
                 # must be verified before any success claim reaches the UI.
@@ -425,6 +436,9 @@ class CompanionMemory(Star):
 
     @filter.on_llm_request(priority=-100)
     async def inject(self, event: AstrMessageEvent, req: ProviderRequest):
+        if not self.qq_ingress.current(event):
+            event.stop_event()
+            return
         msg = event.get_extra("companion_message")
         if not msg:
             return
@@ -444,7 +458,11 @@ class CompanionMemory(Star):
         if event.is_private_chat():
             req.system_prompt += "\n" + PERSONA_TOOL_RULE
         else:
-            req.system_prompt += "\n当前为公开群聊。只能使用当前群和发送者作用域的历史及引用材料；不要公开其他私聊的内容。全局人设修改只能由主人私聊提出。"
+            req.system_prompt += "\n当前为公开群聊。只能使用当前群作用域的历史及引用材料；不要公开其他私聊的内容。消息标记了不同说话人，不能把他们的关系或事实混在一起。全局人设修改只能由主人私聊提出。自然接当前话题，不需要逐条回答每个人或总结扫描结果。"
+        qq_options = await self.store.qq_chat.get()
+        if event.get_platform_name() == "aiocqhttp" and qq_options["quote_mode"] == "adaptive":
+            ids = [str(e.row["id"]) for e in event.get_extra("companion_batch") or []] or [str(msg["id"])]
+            req.system_prompt += "\nQQ 日常接话直接回复即可，不需要引用。确实需要指向某条具体输入时，才原生调用 companion_reply_to 选择引用，不能把 <tool_call> 或 DSML 写在正文；可选本轮消息编号：" + ",".join(ids)
         if attachments := event.get_extra("companion_attachments"):
             req.extra_user_content_parts.append(TextPart(text=attachments).mark_as_temp())
         web_settings = await self.web.settings()
@@ -464,6 +482,7 @@ class CompanionMemory(Star):
                     for t in req.func_tool.tools
                     if t.name.startswith("companion_")
                     and (event.is_private_chat() or t.name != "companion_propose_persona")
+                    and (t.name != "companion_reply_to" or (event.get_platform_name() == "aiocqhttp" and qq_options["quote_mode"] == "adaptive"))
                     and (
                         web_settings["enabled"]
                         or t.name not in ("companion_web_search", "companion_read_web")
@@ -475,6 +494,8 @@ class CompanionMemory(Star):
                 text=f"当前北京时间：{datetime.now(TZ).isoformat(timespec='minutes')}\n<reference_memories>\n{memory}\n</reference_memories>"
             ).mark_as_temp()
         )
+        if event.get_platform_name() == "aiocqhttp":
+            event.set_extra("companion_qq_request", req)
 
     async def companion_context(self, source, **options):
         settings = await self.store.get_settings()
@@ -589,6 +610,10 @@ class CompanionMemory(Star):
 
     @filter.on_llm_response()
     async def generated(self, event: AstrMessageEvent, resp: LLMResponse):
+        if not self.qq_ingress.current(event):
+            resp.completion_text = ""
+            event.stop_event()
+            return
         if resp.role == "assistant" and resp.completion_text and not resp.tools_call_name:
             if event.is_private_chat() and event.get_extra("companion_message"):
                 resp.completion_text, checked_receipt = await verify_reply(
@@ -600,12 +625,21 @@ class CompanionMemory(Star):
                 )
                 if checked_receipt:
                     event.set_extra("companion_persona_receipt", checked_receipt)
+            if event.get_platform_name() == "aiocqhttp":
+                resp.completion_text = await recover_quote_reply(
+                    resp.completion_text, event, await self.store.qq_chat.get(),
+                    lambda: self.finish_quote_reply(event),
+                )
+                if not self.qq_ingress.current(event):
+                    resp.completion_text = ""
+                    event.stop_event()
+                    return
             event.set_extra("companion_reply", resp.completion_text)
             msg = event.get_extra("companion_message")
-            if msg:
+            if msg and event.get_platform_name() != "aiocqhttp":
                 await self.store.record(
                     record_platform(event),
-                    str(event.get_sender_id()),
+                    record_account(event),
                     msg["conversation_id"],
                     msg["event_id"],
                     "assistant",
@@ -638,7 +672,7 @@ class CompanionMemory(Star):
         if text:
             await self.store.record(
                 record_platform(event),
-                str(event.get_sender_id()),
+                record_account(event),
                 msg["conversation_id"],
                 msg["event_id"],
                 "assistant",
@@ -647,14 +681,34 @@ class CompanionMemory(Star):
 
     @filter.on_decorating_result(priority=-100)
     async def quote_qq_reply(self, event: AstrMessageEvent):
+        if not self.qq_ingress.current(event):
+            event.stop_event()
+            return
         if event.get_platform_name() != "aiocqhttp" or not event.get_extra("companion_reply"):
             return
         result = event.get_result()
         if not result or not all(isinstance(c, (Plain, Image)) for c in result.chain):
             return
-        if not event.is_private_chat():
-            result.chain.insert(0, At(qq=str(event.get_sender_id())))
-        result.chain.insert(0, Reply(id=str(event.message_obj.message_id)))
+        target = quote_target(event, await self.store.qq_chat.get())
+        if not event.is_private_chat() and (target or event.get_extra("companion_directed")):
+            result.chain.insert(0, At(qq=target["sender"] if target else str(event.get_sender_id())))
+        if target:
+            result.chain.insert(0, Reply(id=target["id"]))
+
+    @filter.llm_tool(name="companion_reply_to")
+    async def reply_to(self, event: AstrMessageEvent, message_id: str):
+        """Optionally quote one specific current QQ input; ordinary replies need no quote.
+
+        Args:
+            message_id(string): A current input's source number provided in this turn.
+        """
+        if event.get_platform_name() != "aiocqhttp" or (await self.store.qq_chat.get())["quote_mode"] != "adaptive":
+            return "本轮未开放选择引用"
+        try:
+            choose_quote(event, message_id)
+            return "已选择本轮引用目标，继续生成正常回复；发送时会加引用。"
+        except ValueError as exc:
+            return str(exc)
 
     @filter.llm_tool(name="companion_search")
     async def search(self, event: AstrMessageEvent, query: str):
@@ -854,6 +908,47 @@ class CompanionMemory(Star):
 
     async def page_qq(self):
         return json_response(self.qq.snapshot())
+
+    async def generate_group_decision(self, system, payload, source):
+        await self.meter_provider()
+        with self.activity.working("正在看看群聊"), usage_scope(
+            "group_scan", person_id=source["person_id"], message_id=source["id"], max_output=512
+        ):
+            result = await self.context.llm_generate(
+                chat_provider_id=self.provider_id, system_prompt=system,
+                prompt=json.dumps(payload, ensure_ascii=False), response_format={"type": "json_object"},
+            )
+        return result.completion_text
+
+    async def finish_quote_reply(self, event):
+        req = event.get_extra("companion_qq_request")
+        source = event.get_extra("companion_message")
+        if not req or not source:
+            return "我指的是这条。"
+        material = "\n".join(p.text for p in req.extra_user_content_parts if isinstance(p, TextPart))
+        prompt = (req.prompt or event.message_str) + "\n" + material
+        prompt += "\n[系统执行回执：本轮引用目标已成功选择，发送层会添加引用。现在针对上述聊天内容继续生成自然回复，不再调用工具，不输出内部标记或解释引用流程。]"
+        with self.activity.working("正在回复"), usage_scope(
+            "quote_recovery", person_id=source["person_id"], message_id=source["id"], max_output=4000
+        ):
+            async with asyncio.timeout(35):
+                response = await self.context.llm_generate(
+                    chat_provider_id=self.provider_id, system_prompt=req.system_prompt,
+                    prompt=prompt, contexts=list(req.contexts or []),
+                )
+        return response.completion_text
+
+    async def page_qq_chat(self):
+        data = {"settings": await self.store.qq_chat.get(), "scans": await self.group_scan.recent()}
+        return json_response(json.loads(json.dumps(data, default=str, ensure_ascii=False)))
+
+    async def save_qq_chat(self):
+        try:
+            settings = await self.store.qq_chat.save(await request.json(default={}))
+            self.qq_ingress.groups.configure_interval(settings["group_scan_interval"])
+            return json_response({"saved": True, "settings": settings})
+        except ValueError as exc:
+            return error_response(str(exc))
 
     async def refresh_qq(self):
         try:

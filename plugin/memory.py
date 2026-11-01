@@ -15,6 +15,7 @@ from .context_policy import PolicyStore
 from .continuity import Continuity
 from .persona import PersonaStore
 from .proactive import DEFAULT_CONTACT, ContactStore
+from .qq_policy import DEFAULT_QQ_CHAT, QQChatPolicy
 from .settings import DEFAULT_SETTINGS, validate_settings
 from .token_counting import split_text, tokens
 
@@ -49,12 +50,17 @@ class MemoryStore:
         self.policy = PolicyStore(self.pool)
         self.continuity = Continuity(self.pool, self.policy)
         self.contact = ContactStore(self.pool)
+        self.qq_chat = QQChatPolicy(self.pool)
 
     async def open(self):
         await self.pool.open(wait=True, timeout=10)
         async with self.pool.connection() as conn:
             await conn.execute(Path(__file__).with_name("schema.sql").read_text("utf-8"))
             await self.personas.migrate(conn)
+            await conn.execute(
+                "INSERT INTO qq_chat_settings(id,payload) VALUES(true,%s) ON CONFLICT DO NOTHING",
+                (Jsonb(DEFAULT_QQ_CHAT),),
+            )
             await conn.execute(
                 "INSERT INTO proactive_settings(id,payload) VALUES(true,%s) ON CONFLICT DO NOTHING",
                 (Jsonb(DEFAULT_CONTACT),),

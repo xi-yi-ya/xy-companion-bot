@@ -2,10 +2,12 @@
 
 import asyncio
 import copy
+import math
 import time
 from dataclasses import dataclass, field
 
 from .attachments import component_kind, filename
+from .qq_policy import allowed_group
 
 
 def chat_key(event):
@@ -15,6 +17,22 @@ def chat_key(event):
         "private" if event.is_private_chat() else str(event.get_group_id()),
         str(event.get_sender_id()),
     )
+
+
+def group_key(event):
+    return (event.get_platform_id(), str(event.get_self_id()), str(event.get_group_id()))
+
+
+def record_account(event):
+    if event.get_extra("companion_group_scan"):
+        return f"room:{event.get_self_id()}"
+    return str(event.get_sender_id())
+
+
+def speaker(event):
+    sender = getattr(event.message_obj, "sender", None)
+    name = str(getattr(sender, "nickname", "") or "群成员").replace("\n", " ")[:80]
+    return f"{name}（QQ {event.get_sender_id()}）"
 
 
 def directly_mentioned(event):
@@ -39,7 +57,10 @@ def raw_content(event):
     labels.extend(
         f"[用户引用消息 #{c.id}]" for c in event.get_messages() if component_kind(c) == "reply"
     )
-    return event.message_str + ("\n" + "\n".join(labels) if labels else "")
+    content = event.message_str + ("\n" + "\n".join(labels) if labels else "")
+    if event.get_extra("companion_group_scan"):
+        content = f"[群成员 {speaker(event)} 发言]\n{content}"
+    return content
 
 
 def meaningful(event):
@@ -72,30 +93,43 @@ class Burst:
     entries: list = field(default_factory=list)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     sealed: bool = False
+    deadline: float | None = None
 
 
 class QuietWindow:
-    def __init__(self, quiet=1.0, maximum=5.0):
+    def __init__(self, quiet=1.0, maximum=5.0, *, key=chat_key, interval=None):
         self.quiet, self.maximum = quiet, maximum
         self.pending, self.tasks = {}, set()
+        self.capture_locks = {}
+        self.key, self.interval, self.anchor = key, interval, time.monotonic()
+
+    def deadline(self, burst):
+        if burst.deadline is not None:
+            return burst.deadline
+        return min(burst.last + self.quiet, burst.first + self.maximum)
+
+    def configure_interval(self, interval):
+        if interval == self.interval:
+            return
+        self.interval, self.anchor = interval, time.monotonic()
+        for burst in self.pending.values():
+            burst.deadline = self.anchor + interval
+            burst.changed.set()
 
     def collecting(self, key):
         burst = self.pending.get(key)
-        return bool(
-            burst
-            and not burst.sealed
-            and time.monotonic() < min(burst.last + self.quiet, burst.first + self.maximum)
-        )
+        return bool(burst and not burst.sealed and time.monotonic() < self.deadline(burst))
 
     async def collect(self, event, capture):
-        key, now = chat_key(event), time.monotonic()
+        key, now = self.key(event), time.monotonic()
         burst = self.pending.get(key)
-        if (
-            not burst
-            or burst.sealed
-            or now >= min(burst.last + self.quiet, burst.first + self.maximum)
-        ):
+        if not burst or burst.sealed or now >= self.deadline(burst):
             burst = Burst(key, now, now)
+            if self.interval is not None:
+                burst.deadline = (
+                    self.anchor
+                    + (math.floor((now - self.anchor) / self.interval) + 1) * self.interval
+                )
             self.pending[key] = burst
             task = asyncio.create_task(self.flush(burst))
             self.tasks.add(task)
@@ -105,7 +139,10 @@ class QuietWindow:
         burst.last = now
         burst.changed.set()
         try:
-            entry.row = await capture(entry.event)
+            # PG connections can finish concurrent inserts in the opposite
+            # order. Keep source IDs in arrival order across scan windows.
+            async with self.capture_locks.setdefault(key, asyncio.Lock()):
+                entry.row = await capture(entry.event)
             burst.changed.set()
             return await entry.future
         finally:
@@ -118,7 +155,7 @@ class QuietWindow:
             while True:
                 burst.changed.clear()
                 now = time.monotonic()
-                deadline = min(burst.last + self.quiet, burst.first + self.maximum)
+                deadline = self.deadline(burst)
                 if now >= deadline:
                     burst.sealed = True
                     active = [e for e in burst.entries if not e.dropped]
@@ -150,9 +187,16 @@ class QuietWindow:
 
 
 class QQIngress:
-    def __init__(self, bridge, capture, quiet=1.0, maximum=5.0):
+    def __init__(self, bridge, capture, quiet=1.0, maximum=5.0, policy=None):
         self.bridge, self.capture = bridge, capture
         self.window = QuietWindow(quiet, maximum)
+        self.policy = policy
+        self.groups = QuietWindow(key=group_key, interval=10)
+        self.revisions = {}
+
+    def current(self, event):
+        revision = event.get_extra("companion_input_revision")
+        return revision is None or self.revisions.get(chat_key(event)) == revision
 
     async def authorize(self, event):
         if event.is_private_chat():
@@ -162,6 +206,12 @@ class QQIngress:
             return "ignore"
         if str(event.get_sender_id()) == str(event.get_self_id()):
             return "ignore"
+        if self.policy:
+            options = await self.policy.get()
+            if not allowed_group(event, options):
+                return "ignore"
+            if options["group_scan_enabled"]:
+                return "allow"
         return (
             "allow"
             if directly_mentioned(event) or self.window.collecting(chat_key(event))
@@ -169,12 +219,30 @@ class QQIngress:
         )
 
     async def process(self, event):
+        group_scan = False
+        if self.policy and event.is_private_chat():
+            options = await self.policy.get()
+            self.window.quiet = options["private_quiet_seconds"]
+            self.window.maximum = max(15.0, self.window.quiet * 2)
+        if self.policy and not event.is_private_chat():
+            options = await self.policy.get()
+            group_scan = options["group_scan_enabled"]
+            self.groups.configure_interval(options["group_scan_interval"])
+        if group_scan:
+            event.set_extra("companion_group_scan", True)
+            event.unified_msg_origin = f"{event.get_platform_id()}:GroupMessage:scan_{event.get_self_id()}_{event.get_group_id()}"
         if not meaningful(event) and directly_mentioned(event):
             event.message_str = "[用户@了Bot]"
         # Keep framework commands responsive and out of an ordinary-chat burst.
-        if event.message_str.lstrip().startswith(("/", "!")) or not meaningful(event):
+        if not meaningful(event) or (
+            not group_scan and event.message_str.lstrip().startswith(("/", "!"))
+        ):
             return True
-        entries = await self.window.collect(event, self.capture)
+        if event.is_private_chat():
+            key = chat_key(event)
+            self.revisions[key] = self.revisions.get(key, 0) + 1
+            event.set_extra("companion_input_revision", self.revisions[key])
+        entries = await (self.groups if group_scan else self.window).collect(event, self.capture)
         if not entries:
             event.stop_event()
             return False
@@ -183,13 +251,24 @@ class QQIngress:
         event.set_extra("companion_before_id", min(e.row["id"] for e in entries))
         event.message_obj.message = [c for entry in entries for c in entry.event.get_messages()]
         event.message_str = batch_prompt(entries)
+        event.set_extra("companion_directed", any(directly_mentioned(e.event) for e in entries))
+        if group_scan:
+            # Registered handlers wake the event; the native LLM gate also
+            # needs this flag. No synthetic @ is inserted into user data.
+            event.is_at_or_wake_command = True
         return True
 
     async def close(self):
         await self.window.close()
+        await self.groups.close()
 
 
 def batch_prompt(entries):
+    if entries[0].event.get_extra("companion_group_scan"):
+        return "[本次群聊扫描的新消息；下列发言来自不同群成员]\n" + "\n".join(
+            f"[消息 #{e.row['id']} · {speaker(e.event)} · {e.row['created_at'].isoformat(timespec='seconds')}]\n{e.event.message_str or '[附件/引用消息]'}"
+            for e in entries
+        )
     if len(entries) == 1:
         return entries[0].event.message_str
     return "\n".join(

@@ -7,6 +7,11 @@ CREATE TABLE IF NOT EXISTS bot_settings (
     payload jsonb NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS qq_chat_settings (
+    id boolean PRIMARY KEY DEFAULT true CHECK(id),
+    payload jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS persona_profile (
     id boolean PRIMARY KEY DEFAULT true CHECK(id),
     payload jsonb NOT NULL,
@@ -140,6 +145,14 @@ CREATE TABLE IF NOT EXISTS daily_jobs (
     error text,
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY(person_id, day)
+);
+CREATE TABLE IF NOT EXISTS qq_group_scans (
+    id bigserial PRIMARY KEY,
+    person_id text NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    message_id bigint NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    decision text NOT NULL CHECK(decision IN ('reply','silent','error')),
+    reason text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS context_runs (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import secrets
@@ -60,7 +61,9 @@ def guard_waking_stage(stage_class, bridge, ingress=None):
                         return
                 except Exception:
                     event.stop_event()
-                    await event.send(event.plain_result("本地消息记录暂时不可用，请稍后重试。"))
+                    logging.getLogger(__name__).exception("QQ ingress preparation failed")
+                    if event.is_private_chat():
+                        await event.send(event.plain_result("本地消息记录暂时不可用，请稍后重试。"))
                     return
         return await original(stage, event)
 

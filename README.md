@@ -2,7 +2,9 @@
 
 AstrBot v4.29.4（`61335414433db721b3f7ecc93f90deafe0a59d78`）+ 自研插件 + 本机 PostgreSQL。
 
-[QQ 聊天能力](docs/QQ_CHAT.md)：引用理解与引用回复、群聊仅 @Bot 触发、连发停顿 1 秒后合并，人设申请返回真实入库回执。
+[QQ 聊天能力](docs/QQ_CHAT.md)：按需引用、默认每 10 秒查看群聊新消息并自主接话、可调的私聊消息合并窗口（默认 3.5 秒）、生成中过时回复拦截，人设申请返回真实入库回执。配置入口为 **Bot 设置 → QQ 连接 → 聊天方式**。
+
+[QQ 自主管理方案](docs/QQ_AUTONOMY.md)：头像、签名、状态和表情包的接口与现成插件核查；尚未开放这些账号操作权限。
 
 [后续研究方向](docs/RESEARCH_ROADMAP.md)：群聊观察与私聊分享、自主浏览 B站 / 小红书。当前仅记录方向，暂不实施。
 
@@ -91,11 +93,11 @@ L1 每日候选从近 30 天按天分层抽样，每天最多 12 条、最多 36
 
 打开 <http://127.0.0.1:6185/companion/qq>，或“Bot 设置 → QQ 连接”。用 Bot 小号扫码，再用自己的主号给它发送页面显示的绑定口令；之后 QQ 与 Web 共用记忆、人设及习惯。二维码在本地后台刷新，页面可以留到早上。独立 QQ 客户端随 Bot 启停，登录信息仅存本机。
 
-已安装 NapCat 4.18.42 的独立 Windows Node 包，并配置本机 OneBot 反向 WebSocket。初次部署可运行 `.venv\Scripts\python.exe install_qq.py`；无需修改日常使用的桌面 QQ。主号绑定前不把 QQ 消息交给模型，群聊不在当前接入范围。手机扫码后的真实私聊往返仍需验收。[安装、验证和回退说明](docs/QQ_SETUP.md)。
+已安装 NapCat 4.18.42 的独立 Windows Node 包，并配置本机 OneBot 反向 WebSocket。初次部署可运行 `.venv\Scripts\python.exe install_qq.py`；无需修改日常使用的桌面 QQ。主号绑定前不把 QQ 消息交给模型；完成绑定后可启用群聊定时查看。账号已绑定并有真实私聊记录；新群聊链路通过隔离模拟连接验收，手机端新显示效果仍需实际使用观察。[安装、验证和回退说明](docs/QQ_SETUP.md)。
 
 ## 当前范围与限制
 
-- 本机 Web 私聊已验证；QQ 组件、二维码、协议鉴权与门禁已验证，等待手机扫码后的真实收发。微信后续接入。
+- 本机 Web 私聊及 QQ 绑定已使用；群聊扫描、消息合并和引用测试见 QQ 聊天文档。微信后续接入。
 - pgvector 0.8.7 已安装到现有 PostgreSQL 18，在 `companion_bot` 中启用。Windows 包来源为 `andreiramani/pgvector_pgsql_windows` 的 PG18 专用发布，SHA256 及安装文件清单记录在 `runtime/pgvector-install.json`；未替换 PostgreSQL 服务。
 - 语义检索使用本地 CPU ONNX 模型 `BAAI/bge-small-zh-v1.5`，512 维；固定模型仓库 revision 为 `46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59`。查询和记忆向量在本机计算，模型路径为 `runtime/models/bge-small-zh-v1.5`。命中候选由主聊天模型判断相关性。
 - 提及和纠错的语义判定仍依赖模型，来源校验不等于语义一定正确，需继续用真实对话评估。
