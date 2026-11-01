@@ -1,7 +1,7 @@
 const bridge=window.AstrBotPluginView;
 const $=id=>document.getElementById(id);
 await bridge.ready();
-let current='', memories=[], filter='all', personaState, profileVersion, profileDirty=false;
+let current='', memories=[], filter='all', personaState, profileVersion, profileDirty=false, personaPolicyDirty=false;
 const profileFields={name:'bot-name',personality:'persona',speech_style:'speech-style',boundaries:'boundaries',worldview:'worldview'};
 const statuses={checking:'检查中',pending:'待你批准',approved:'已批准',rejected:'已拒绝',blocked:'检查未通过',stale:'已过期，需重新申请'};
 $('day').value=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -43,14 +43,15 @@ function renderProposals(){
   if(!personaState.proposals.length)$('proposals').append(node('p','暂时没有申请。Bot 提出具体修改后，会在这里等待你处理。','empty'));
   for(const p of personaState.proposals){
     const card=node('article','','memory-card proposal '+p.status);card.dataset.proposalId=p.id;
-    card.append(node('div',`#${p.id} · ${p.layer} ${fieldLabel(p)} · ${statuses[p.status]} · 基于 v${p.base_version}`,'meta'));
+    card.append(node('div',`#${p.id} · ${p.layer} ${fieldLabel(p)} · ${statuses[p.status]}${p.approved_by==='system_auto'?'（自主模式）':''} · ${p.person_id==='webchat:owner'?'主人':p.person_id} · 基于 v${p.base_version}`,'meta'));
     const diff=node('div','','diff');for(const [label,value] of [['修改前',p.old_value||'（新增）'],['拟修改为',p.new_value]]){const cell=node('div');cell.append(node('strong',label),node('p',value,'content'));diff.append(cell);}card.append(diff);
     card.append(node('p',`修改理由：${p.reason}`),node('p',`一致性检查：${p.check_result.reason||'尚未完成'}`,'hint'),sourceDetails(p.sources));
+    if(p.check_result.auto_deferred_reason)card.append(node('p',`等待处理：${p.check_result.auto_deferred_reason}`,'hint'));
     if(p.status==='pending'){
       const actions=node('div','','actions');for(const [action,label] of [['approve','批准这项修改'],['reject','拒绝']]){const button=node('button',label,action==='approve'?'primary':'');button.onclick=()=>busy(button,async()=>{
         const question=action==='approve'?`确认授权这项修改？\n${p.layer} ${fieldLabel(p)}\n${p.old_value||'（新增）'}\n→ ${p.new_value}${p.layer==='L0'?'\n这会使旧申请过期，并暂停已有 L1。':''}`:'拒绝这项修改申请？';
         if(!await askConfirmation(question))return;
-        unwrap(await bridge.apiPost('persona/decide',{person:current,id:p.id,action}));await loadPersona();notice(action==='approve'?'已批准并执行，下一条回复开始生效。':'已拒绝，人设未改变。');
+        unwrap(await bridge.apiPost('persona/decide',{person:p.person_id,id:p.id,action}));await loadPersona();notice(action==='approve'?'已批准并执行，下一条回复开始生效。':'已拒绝，人设未改变。');
       });actions.append(button);}card.append(actions);
     }
     $('proposals').append(card);
@@ -76,6 +77,7 @@ async function loadMemories(){
 }
 async function loadPersona(){
   personaState=unwrap(await bridge.apiGet('persona',{person:current}));
+  if(!personaPolicyDirty){$('persona-policy-mode').value=personaState.policy.mode;$('persona-auto-limit').value=personaState.policy.daily_limit;}
   if(!profileDirty){for(const [key,id] of Object.entries(profileFields))$(id).value=personaState.profile[key]||'';profileVersion=personaState.version;}
   sizeHint();renderTraits();renderProposals();
 }
@@ -143,6 +145,8 @@ async function loadContact(updateSettings=true){
 $('save-contact').onclick=()=>busy($('save-contact'),async()=>{unwrap(await bridge.apiPost('proactive',{enabled:$('contact-enabled').checked,min_hours:Number($('contact-min').value),max_hours:Number($('contact-max').value),quiet_enabled:$('contact-quiet').checked,quiet_start:$('contact-start').value,quiet_end:$('contact-end').value}));await loadContact();notice('主动联系设置已保存。');});
 $('refresh-contact').onclick=()=>busy($('refresh-contact'),async()=>{await loadContact(false);notice('排期已刷新，未改变计时。');});
 $('preview-contact').onclick=()=>busy($('preview-contact'),async()=>{notice('正在结合人设、记忆和聊天生成预览…');const data=unwrap(await bridge.apiPost('proactive/preview',{})),r=data.preview;const card=node('article','','memory-card');card.append(node('div',r.send?'这次想说（仅预览）':'这次选择保持安静','meta'),node('div',r.send?r.text:r.reason,'content'));$('contact-preview').replaceChildren(card);notice('预览完成，没有向 QQ 发送。');});
+for(const id of ['persona-policy-mode','persona-auto-limit'])$(id).oninput=()=>{personaPolicyDirty=true;};
+$('save-persona-policy').onclick=()=>busy($('save-persona-policy'),async()=>{unwrap(await bridge.apiPost('persona/policy',{mode:$('persona-policy-mode').value,daily_limit:Number($('persona-auto-limit').value)}));personaPolicyDirty=false;await loadPersona();notice('人设修改权限已保存，之后的新候选按此模式处理。');});
 $('test-contact').onclick=()=>busy($('test-contact'),async()=>{const r=unwrap(await bridge.apiPost('proactive/test',{}));notice(r.sent?`QQ 已接受发送到主号 ${r.account}，请在手机确认收到；本次测试不改主动联系排期。`:'测试尚未发送。');});
 let contactPolling=false;
 setInterval(async()=>{if($('proactive-panel').hidden||contactPolling)return;contactPolling=true;try{await loadContact(false);}catch(e){$('contact-state').textContent='正在等待 Bot 重新连接…';}finally{contactPolling=false;}},15000);
@@ -188,3 +192,5 @@ $('refresh-qq-agent').onclick=()=>busy($('refresh-qq-agent'),()=>loadQQAgent(fal
 $('qq-emergency').onclick=()=>busy($('qq-emergency'),async()=>{const data=unwrap(await bridge.apiPost('qq/agent/pause',{}));$('qq-agent-paused').checked=true;await loadQQAgent(false);notice(data.note);});
 $('upload-qq-asset').onclick=()=>busy($('upload-qq-asset'),async()=>{const f=$('qq-asset-file').files[0];if(!f||f.size>20*1024*1024)throw new Error('请选择 20MB 内的常规文件。');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(f);});unwrap(await bridge.apiPost('qq/agent/assets',{name:f.name,data}));await loadQQAgent(false);notice('素材已加入可发送列表。');});
 try{await Promise.all([loadSettings(),loadMemories()]);await Promise.all([loadPersona(),loadWeb(),loadMetrics(),loadQQ(),loadQQChat(),loadContact(),loadQzone(),loadPublication(),loadQQAgent()]);notice('人设、习惯与记忆已从本地数据库载入。');}catch(e){notice(e.message,true);}
+const {initQQCustomUI}=await import('./qq_custom_ui.js');
+try{await initQQCustomUI({bridge,unwrap,node,busy,notice,askConfirmation});}catch(e){notice('QQ 外观与表情载入失败：'+e.message,true);}

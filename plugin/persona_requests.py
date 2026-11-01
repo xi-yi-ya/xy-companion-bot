@@ -8,14 +8,14 @@ from .persona import L0_FIELDS, L1_FIELDS
 
 PERSONA_TOOL_RULE = """提出具体人设修改时，必须实际调用 companion_propose_persona；使用原生函数调用，不能在普通回答里写 <tool_call>、JSON 或伪造工具结果。
 参数为 layer、field、new_value、reason、quote（用户本轮某条原话），不要把 new_value 写成 change。
-只有工具返回真实 proposal_id 和 pending 状态，才能说申请已进入待审，并告诉用户编号。blocked/stale/checking 分别如实说明，不能声称已生效。
+只有工具返回真实 proposal_id 和 pending 状态，才能说申请已进入待审，并告诉用户编号；approved 且 applied=true 才能说已按授权生效。blocked/stale/checking 分别如实说明。
 用户让你重试先前的具体修改时，可以用本轮“再提一次”等原话作为请求上下文；理由不要编造用户的逐字确认。"""
 
 
 def needs_verified_output(text):
     return bool(
         re.search(
-            r"人设|个性|性格|习惯|申请|提交|再提|修改|直接提|你提|改一下|companion_propose_persona",
+            r"人设|个性|性格|习惯|申请|提交|再提|修改|直接提|你提|改一下|都加|加上|就加|加进去|提出来|提一下|就提|提吧|同意|companion_propose_persona",
             text,
         )
     )
@@ -45,11 +45,14 @@ def receipt(proposal):
         "rejected": "申请已被拒绝，没有生效",
         "approved": "该申请此前已由用户批准，本轮未重复修改",
     }
+    automatic = status == "approved" and proposal.get("approved_by") == "system_auto"
     return {
         "proposal_id": proposal["id"],
         "status": status,
-        "applied": False,
-        "instruction": labels.get(status, status),
+        "applied": automatic,
+        "instruction": "已按你开启的自动模式通过一致性检查并生效"
+        if automatic
+        else labels.get(status, status),
         "check": proposal["check_result"],
         "layer": proposal["layer"],
         "field": proposal["field"],
@@ -117,11 +120,31 @@ async def submit(store, sources, arguments, check):
 
 
 async def verify_reply(text, sources, store, check, actual_receipt=None):
-    """Only recover the proposal tool: it creates an approval request, never applies it."""
+    """Recover only a concrete persona proposal, using the configured approval policy."""
     blocks = draft_blocks(text)
     if blocks and sources and sources[-1] and sources[-1]["person_id"] == "webchat:owner":
         user_text = "\n".join(r["content"] for r in sources if r)
-        intent = bool(re.search(r"人设|个性|性格|习惯|申请|提交|再提|修改", user_text))
+        if re.search(r"解释|示例|只展示|不要执行|不要提交|别提交|不要修改|别修改", user_text):
+            return text, None
+        # Follow-ups such as “那就都加” are genuine requests too. An exact,
+        # validated persona call is sufficient in confirm mode; application
+        # still goes through the stored policy and consistency checks.
+        explicit = False
+        for block in blocks:
+            try:
+                call = json.loads(block)
+                args = call.get("arguments", {})
+                if (
+                    call.get("name") == "companion_propose_persona"
+                    and isinstance(args, dict)
+                    and args.get("new_value")
+                    and not re.search(r"解释|示例|只展示|不要执行", user_text)
+                ):
+                    quoted_source(sources, args.get("quote"))
+                    explicit = True
+            except (ValueError, TypeError, AttributeError):
+                pass
+        intent = needs_verified_output(user_text) or explicit
         if intent:
             if len(blocks) != 1:
                 return "这轮人设申请格式不明确，尚未提交，也没有更改设定。", None
@@ -162,3 +185,28 @@ async def verify_reply(text, sources, store, check, actual_receipt=None):
                 return describe(result), result
         return "这轮没有取得人设申请的入库回执，不能确认已经提交；当前设定没有更改。", None
     return text, None
+
+
+async def recover_stored(store, assistant_id, check):
+    """Repair a persisted, owner-scoped tool draft using its actual user input."""
+    async with store.pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT * FROM messages WHERE id=%s AND role='assistant' AND person_id='webchat:owner' AND chat_type='private'",
+                (int(assistant_id),),
+            )
+        ).fetchone()
+        if not row or "companion_propose_persona" not in row["content"]:
+            raise ValueError("没有找到主人私聊中的人设申请草稿")
+        source = await (
+            await conn.execute(
+                "SELECT * FROM messages WHERE conversation_id=%s AND event_id=%s AND role='user' AND person_id='webchat:owner' AND id<%s ORDER BY id DESC LIMIT 1",
+                (row["conversation_id"], row["event_id"], row["id"]),
+            )
+        ).fetchone()
+    if not source:
+        raise ValueError("没有找到这次申请对应的真实用户输入")
+    text, result = await verify_reply(row["content"], [source], store, check)
+    if not result:
+        raise ValueError("草稿未通过来源或参数验证：" + text[:200])
+    return {"reply": text, "receipt": result, "source_message_id": source["id"]}

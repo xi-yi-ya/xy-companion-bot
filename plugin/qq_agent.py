@@ -440,7 +440,9 @@ class QQAgent:
             )
         return action != "delete_msg" or settings["recall"]
 
-    async def execute(self, action, args, key, actor, metadata):
+    async def execute(
+        self, action, args, key, actor, metadata, *, preflight=None, receipt_check=None
+    ):
         if self.closing or (await self.settings())["paused"]:
             return {"status": "paused", "reason": "QQ 急停已开启"}
         identity = self.identity()
@@ -491,6 +493,7 @@ class QQAgent:
             if (
                 not await self.permitted(action, actor, metadata)
                 or str(self.identity().get("bot_qq", "")) != account
+                or (preflight is not None and not await preflight())
             ):
                 status = "cancelled"
             else:
@@ -504,6 +507,8 @@ class QQAgent:
                     raise ValueError("API receipt invalid")
                 if result.get("status") == "failed" or result.get("retcode", 0) != 0:
                     status, error = "failed", "OneBot rejected"
+                elif receipt_check is not None and (receipt_error := receipt_check(result)):
+                    status, error = "failed", receipt_error
                 elif action.startswith("send_") and not result.get("message_id"):
                     error = "发送回执缺少消息编号，结果未知"
                 else:
@@ -614,7 +619,7 @@ class QQAgent:
             "omitted": max(0, len(rows) - 300),
         }
 
-    async def add_asset(self, name, encoded):
+    async def add_asset(self, name, encoded, *, approved=True):
         name = str(name).replace("\\", "/").rsplit("/", 1)[-1]
         ext = Path(name).suffix.lower()
         if not name or len(name) > 150 or ext not in FILES or len(encoded) > 28_000_000:
@@ -630,8 +635,8 @@ class QQAgent:
         path.write_bytes(data)
         async with self.pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO qq_assets(id,name,path,size,kind) VALUES(%s,%s,%s,%s,%s)",
-                (asset, name, str(path), len(data), "image" if ext in MEDIA else "file"),
+                "INSERT INTO qq_assets(id,name,path,size,kind,approved) VALUES(%s,%s,%s,%s,%s,%s)",
+                (asset, name, str(path), len(data), "image" if ext in MEDIA else "file", approved),
             )
         return {"asset_id": str(asset), "name": name, "kind": "image" if ext in MEDIA else "file"}
 
@@ -639,7 +644,7 @@ class QQAgent:
         async with self.pool.connection() as conn:
             return await (
                 await conn.execute(
-                    "SELECT id,name,size,kind,created_at FROM qq_assets ORDER BY created_at DESC LIMIT 100"
+                    "SELECT id,name,size,kind,created_at FROM qq_assets WHERE approved=true ORDER BY created_at DESC LIMIT 100"
                 )
             ).fetchall()
 
@@ -660,6 +665,8 @@ class QQAgent:
             ).fetchone()
         if not asset:
             raise ValueError("文件不在已授权素材库中")
+        if not asset["approved"]:
+            raise ValueError("图片仍在待审区，不能发送")
         path = Path(asset["path"]).resolve()
         if not path.is_relative_to(self.root) or not path.is_file():
             raise ValueError("素材已不存在或路径越界")

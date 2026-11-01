@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
     payload jsonb NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS persona_policy(id boolean PRIMARY KEY DEFAULT true CHECK(id),mode text NOT NULL DEFAULT 'confirm' CHECK(mode IN ('confirm','auto')),daily_limit integer NOT NULL DEFAULT 4 CHECK(daily_limit BETWEEN 1 AND 20));
 CREATE TABLE IF NOT EXISTS qq_chat_settings (
     id boolean PRIMARY KEY DEFAULT true CHECK(id),
     payload jsonb NOT NULL,
@@ -252,6 +253,13 @@ CREATE TABLE IF NOT EXISTS qq_agent_accounts(account_qq text PRIMARY KEY,initial
 CREATE TABLE IF NOT EXISTS qq_requests(id text PRIMARY KEY,account_qq text NOT NULL,platform_id text NOT NULL,kind text NOT NULL CHECK(kind IN ('friend','group')),sub_type text NOT NULL,user_id text NOT NULL,group_id text,flag text NOT NULL,comment text NOT NULL,status text NOT NULL DEFAULT 'pending',created_at timestamptz NOT NULL DEFAULT now(),decided_at timestamptz);
 CREATE TABLE IF NOT EXISTS qq_operations(id uuid PRIMARY KEY,account_qq text NOT NULL,action text NOT NULL,idempotency_key text NOT NULL,actor text NOT NULL,metadata jsonb NOT NULL,status text NOT NULL,message_id text,error text,created_at timestamptz NOT NULL DEFAULT now(),finished_at timestamptz,recalled_at timestamptz,UNIQUE(account_qq,idempotency_key));
 CREATE TABLE IF NOT EXISTS qq_assets(id uuid PRIMARY KEY,name text NOT NULL,path text NOT NULL,size bigint NOT NULL,kind text NOT NULL CHECK(kind IN ('image','file')),created_at timestamptz NOT NULL DEFAULT now());
+ALTER TABLE qq_assets ADD COLUMN IF NOT EXISTS approved boolean NOT NULL DEFAULT true;
+CREATE TABLE IF NOT EXISTS qq_custom_settings(id boolean PRIMARY KEY DEFAULT true CHECK(id),payload jsonb NOT NULL,revision bigint NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS qq_custom_actions(id uuid PRIMARY KEY,account_qq text NOT NULL,kind text NOT NULL,payload jsonb NOT NULL,reason text NOT NULL DEFAULT '',status text NOT NULL,idempotency_key text NOT NULL,source_message_id bigint,created_at timestamptz NOT NULL DEFAULT now(),started_at timestamptz,finished_at timestamptz,operation_id uuid,error text,approved boolean NOT NULL DEFAULT false,UNIQUE(account_qq,idempotency_key));
+CREATE TABLE IF NOT EXISTS qq_profile_cache(account_qq text PRIMARY KEY,payload jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS qq_stickers(asset_id uuid PRIMARY KEY REFERENCES qq_assets(id),sha256 text NOT NULL UNIQUE,description text NOT NULL,tags jsonb NOT NULL,emotion text NOT NULL,scope text NOT NULL,source jsonb NOT NULL,embedding public.vector(512),created_at timestamptz NOT NULL DEFAULT now(),last_used_at timestamptz,use_count integer NOT NULL DEFAULT 0,qq_state text NOT NULL DEFAULT 'not_synced',qq_receipt jsonb NOT NULL DEFAULT '{}');
+ALTER TABLE qq_stickers ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true;
+CREATE TABLE IF NOT EXISTS qq_sticker_queue(message_id bigint PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,refs jsonb NOT NULL,scope text NOT NULL,status text NOT NULL DEFAULT 'pending',error text,created_at timestamptz NOT NULL DEFAULT now(),finished_at timestamptz);
 CREATE OR REPLACE VIEW message_context AS
 SELECT m.id,m.person_id,m.conversation_id,m.event_id,m.role,
     m.content || coalesce(a.body,'') AS content,m.created_at,
