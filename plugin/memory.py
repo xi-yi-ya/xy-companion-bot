@@ -13,10 +13,12 @@ from psycopg_pool import AsyncConnectionPool
 
 from .context_policy import PolicyStore
 from .continuity import Continuity
+from .message_sources import message_source
 from .persona import PersonaStore
 from .proactive import DEFAULT_CONTACT, ContactStore
 from .qq_policy import DEFAULT_QQ_CHAT, QQChatPolicy
 from .qzone import DEFAULT_QZONE, QzoneStore
+from .qzone_publish import DEFAULT_PUBLICATION, PublicationStore
 from .settings import DEFAULT_SETTINGS, validate_settings
 from .token_counting import split_text, tokens
 
@@ -53,12 +55,17 @@ class MemoryStore:
         self.contact = ContactStore(self.pool)
         self.qq_chat = QQChatPolicy(self.pool)
         self.qzone = QzoneStore(self.pool)
+        self.publications = PublicationStore(self.pool)
 
     async def open(self):
         await self.pool.open(wait=True, timeout=10)
         async with self.pool.connection() as conn:
             await conn.execute(Path(__file__).with_name("schema.sql").read_text("utf-8"))
             await self.personas.migrate(conn)
+            await conn.execute(
+                "INSERT INTO qzone_publish_settings(id,payload) VALUES(true,%s) ON CONFLICT DO NOTHING",
+                (Jsonb(DEFAULT_PUBLICATION),),
+            )
             await conn.execute(
                 "INSERT INTO qzone_settings(id,payload) VALUES(true,%s) ON CONFLICT DO NOTHING",
                 (Jsonb(DEFAULT_QZONE),),
@@ -171,9 +178,12 @@ class MemoryStore:
                 (memory_id, i, text, json.dumps(vector), self.embedder.model_id),
             )
 
-    async def record(self, platform, account, conversation, event_id, role, content, at=None):
+    async def record(
+        self, platform, account, conversation, event_id, role, content, at=None, *, source=None
+    ):
         person = f"{platform}:{account}"
         at = at or datetime.now(UTC)
+        origin = message_source(platform, account, conversation, role, content, source)
         async with self.pool.connection() as conn:
             linked = await (
                 await conn.execute(
@@ -200,10 +210,23 @@ class MemoryStore:
             )["person_id"]
             row = await (
                 await conn.execute(
-                    """INSERT INTO messages(person_id,conversation_id,event_id,role,content,created_at,token_count)
-                VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(conversation_id,event_id,role)
+                    """INSERT INTO messages(person_id,conversation_id,event_id,role,content,created_at,token_count,platform,platform_id,chat_type,group_id,sender_id)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(conversation_id,event_id,role)
                 DO UPDATE SET event_id=EXCLUDED.event_id RETURNING *""",
-                    (person, conversation, event_id, role, content, at, tokens(content)),
+                    (
+                        person,
+                        conversation,
+                        event_id,
+                        role,
+                        content,
+                        at,
+                        tokens(content),
+                        origin["platform"],
+                        origin["platform_id"],
+                        origin["chat_type"],
+                        origin["group_id"],
+                        origin["sender_id"],
+                    ),
                 )
             ).fetchone()
             await self.contact.note_user(conn, row)

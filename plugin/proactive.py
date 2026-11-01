@@ -373,7 +373,7 @@ class ContactStore:
             )
             if error is None:
                 await conn.execute(
-                    "INSERT INTO messages(person_id,conversation_id,event_id,role,content,created_at,token_count) VALUES(%s,%s,%s,'assistant',%s,%s,%s) ON CONFLICT DO NOTHING",
+                    "INSERT INTO messages(person_id,conversation_id,event_id,role,content,created_at,token_count,platform,platform_id,chat_type,sender_id) VALUES(%s,%s,%s,'assistant',%s,%s,%s,'aiocqhttp',%s,'private',%s) ON CONFLICT DO NOTHING",
                     (
                         OWNER,
                         run["target"]["umo"],
@@ -381,6 +381,8 @@ class ContactStore:
                         text,
                         now,
                         tokens(text),
+                        run["target"]["umo"].split(":", 1)[0],
+                        str(run["target"].get("self_id") or "") or None,
                     ),
                 )
             await conn.execute(

@@ -1,6 +1,7 @@
 """Persistent read-only Qzone browsing and private sharing candidates."""
 
 import asyncio
+import json
 import math
 import random
 import uuid
@@ -8,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from psycopg.types.json import Jsonb
 
+from .persona_requests import draft_blocks
 from .token_counting import tokens
 
 DEFAULT_QZONE = {"enabled": True, "share_enabled": True, "min_minutes": 15, "max_minutes": 30}
@@ -36,6 +38,22 @@ def validate_qzone(value):
     if value["min_minutes"] > value["max_minutes"]:
         raise ValueError("最短浏览间隔不能大于最长间隔")
     return dict(value)
+
+
+def qzone_read_call(text):
+    """Only recover read/status calls; textual publication commands never execute."""
+    if "companion_qzone_" not in text or not ("<tool_call>" in text or "DSML" in text):
+        return None
+    blocks = draft_blocks(text)
+    if len(blocks) != 1 or len(blocks[0]) > 8000:
+        raise ValueError("空间调用格式不明确")
+    call = json.loads(blocks[0])
+    name, args = call.get("name"), call.get("arguments", {})
+    if name not in ("companion_qzone_read", "companion_qzone_status") or not isinstance(args, dict):
+        raise ValueError("没有取得可验证的空间调用回执")
+    if set(args) - ({"target_qq", "limit"} if name == "companion_qzone_read" else set()):
+        raise ValueError("空间读取参数无效")
+    return name, args
 
 
 def review_items(result, posts):
@@ -127,7 +145,7 @@ class QzoneStore:
         async with self.pool.connection() as conn:
             await self.lock(conn)
             settings, revision = await self.config(conn)
-            if not settings["enabled"]:
+            if not settings["enabled"] and not force:
                 return None
             state = await (await conn.execute("SELECT * FROM qzone_state WHERE id=true")).fetchone()
             if not state:
@@ -146,7 +164,7 @@ class QzoneStore:
                     "UPDATE qzone_runs SET status='error',error='上次浏览中断',finished_at=%s WHERE id=%s AND status='reading'",
                     (now, state["current_run"]),
                 )
-            run = {"id": uuid.uuid4(), "account": account, "revision": revision}
+            run = {"id": uuid.uuid4(), "account": account, "revision": revision, "manual": force}
             await conn.execute(
                 "INSERT INTO qzone_runs(id,account_qq,status,started_at) VALUES(%s,%s,'reading',%s)",
                 (run["id"], account, now),
@@ -185,8 +203,8 @@ class QzoneStore:
                     )
             rows = await (
                 await conn.execute(
-                    "SELECT key,payload FROM qzone_posts WHERE account_qq=%s AND reviewed=false AND (posted_at IS NULL OR posted_at>=%s) ORDER BY posted_at DESC NULLS LAST,first_seen DESC LIMIT 12",
-                    (run["account"], now - timedelta(days=7)),
+                    "SELECT key,payload FROM qzone_posts WHERE account_qq=%s AND key=ANY(%s::text[]) AND reviewed=false AND (posted_at IS NULL OR posted_at>=%s) ORDER BY posted_at DESC NULLS LAST,first_seen DESC LIMIT 12",
+                    (run["account"], [post["key"] for post in posts], now - timedelta(days=7)),
                 )
             ).fetchall()
         return inserted, [row["payload"] for row in rows]
@@ -196,7 +214,7 @@ class QzoneStore:
         async with self.pool.connection() as conn:
             await self.lock(conn)
             settings, revision = await self.config(conn)
-            if not settings["enabled"] or revision != run["revision"]:
+            if (not settings["enabled"] and not run.get("manual")) or revision != run["revision"]:
                 return False
             for key, item in items.items():
                 await conn.execute(
@@ -210,7 +228,7 @@ class QzoneStore:
                     )
             return True
 
-    async def finish(self, run, now, *, posts=0, new=0, reviewed=0, error=None):
+    async def finish(self, run, now, *, posts=0, new=0, reviewed=0, error=None, review_error=None):
         async with self.pool.connection() as conn:
             await self.lock(conn)
             settings, revision = await self.config(conn)
@@ -222,7 +240,7 @@ class QzoneStore:
             )
             await conn.execute(
                 "UPDATE qzone_runs SET status=%s,finished_at=%s,post_count=%s,new_count=%s,reviewed_count=%s,error=%s WHERE id=%s",
-                (status, now, posts, new, reviewed, error, run["id"]),
+                (status, now, posts, new, reviewed, error or review_error, run["id"]),
             )
             if state and state["current_run"] == run["id"]:
                 await conn.execute(
@@ -231,7 +249,7 @@ class QzoneStore:
                         now,
                         error is None,
                         now,
-                        error,
+                        error or review_error,
                         self.due(now, settings) if settings["enabled"] else None,
                     ),
                 )
@@ -268,15 +286,15 @@ class QzoneService:
         self.task, self.last_error = None, None
         self.active = set()
 
-    async def step(self, *, force=False):
+    async def step(self, *, force=False, fetch=None):
         task = asyncio.current_task()
         self.active.add(task)
         try:
-            return await self._step(force=force)
+            return await self._step(force=force, fetch=fetch)
         finally:
             self.active.discard(task)
 
-    async def _step(self, *, force=False):
+    async def _step(self, *, force=False, fetch=None):
         if self.busy() and not force:
             return {"status": "busy"}
         account = await self.available()
@@ -286,27 +304,39 @@ class QzoneService:
         if not run:
             return {"status": "waiting"}
         posts, fresh, pending = [], 0, []
+        reviewed, review_error = 0, None
         try:
             async with asyncio.timeout(180):
-                observed_account, posts = await self.fetch()
+                observed_account, posts = await (fetch or self.fetch)()
                 if str(observed_account) != run["account"]:
                     raise ValueError("QQ 账号已变化")
                 fresh, pending = await self.store.observe(run, posts, self.clock())
                 if pending:
-                    result = await self.review(pending)
-                    accepted = await self.store.reviewed(run, pending, result, self.clock())
-                    if not accepted:
-                        await self.store.finish(run, self.clock(), posts=len(posts), new=fresh)
-                        return {"status": "cancelled"}
+                    try:
+                        result = await self.review(pending)
+                        accepted = await self.store.reviewed(run, pending, result, self.clock())
+                        if not accepted:
+                            await self.store.finish(run, self.clock(), posts=len(posts), new=fresh)
+                            return {"status": "cancelled"}
+                        reviewed = len(pending)
+                    except (ValueError, TypeError) as exc:
+                        review_error = "动态已读取，阅读笔记未完成：" + type(exc).__name__
             await self.store.finish(
-                run, self.clock(), posts=len(posts), new=fresh, reviewed=len(pending)
+                run,
+                self.clock(),
+                posts=len(posts),
+                new=fresh,
+                reviewed=reviewed,
+                review_error=review_error,
             )
-            self.last_error = None
+            self.last_error = review_error
             return {
                 "status": "complete",
                 "posts": len(posts),
                 "new": fresh,
-                "reviewed": len(pending),
+                "reviewed": reviewed,
+                "review_error": review_error,
+                "posts_data": posts,
             }
         except asyncio.CancelledError:
             await self.store.finish(run, self.clock(), error="浏览被中断")

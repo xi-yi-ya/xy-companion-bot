@@ -136,7 +136,7 @@ async def test_disable_during_read_prevents_candidates_and_future_scans(store):
     h.review_hook = disable
     assert (await h.service.step(force=True))["status"] == "cancelled"
     assert not (await store.qzone.snapshot())["candidates"]
-    assert (await h.service.step(force=True))["status"] == "waiting"
+    assert (await h.service.step())["status"] == "waiting"
     assert h.calls == 1
 
 

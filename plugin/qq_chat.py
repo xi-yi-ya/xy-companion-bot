@@ -200,6 +200,15 @@ class QQIngress:
 
     async def authorize(self, event):
         if event.is_private_chat():
+            agent = getattr(self, "agent", None)
+            if (
+                agent
+                and self.bridge.settings.get("enabled")
+                and self.bridge.settings.get("owner_qq")
+            ):
+                options = await agent.settings()
+                if not options["paused"] and str(event.get_sender_id()) in options["private_ids"]:
+                    return "allow"
             return await self.bridge.authorize(str(event.get_sender_id()), event.message_str)
         settings = self.bridge.settings
         if not settings.get("enabled") or not settings.get("owner_qq") or not event.get_group_id():

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -25,9 +26,14 @@ def guard_waking_stage(stage_class, bridge, ingress=None):
     """Pair and gate before native command/permission handling can reply."""
     stage_class._companion_qq_bridge = bridge
     stage_class._companion_qq_ingress = ingress
-    if getattr(stage_class, "_companion_qq_guard", False):
+    if getattr(stage_class, "_companion_qq_guard_version", 0) >= 3:
         return
-    original = stage_class.process
+    original = getattr(stage_class, "_companion_qq_native_process", None)
+    if original is None:
+        original = stage_class.process
+        if getattr(stage_class, "_companion_qq_guard", False):
+            original = inspect.getclosurevars(original).nonlocals.get("original", original)
+    stage_class._companion_qq_native_process = original
 
     async def process(stage, event):
         if event.get_platform_name() == "aiocqhttp":
@@ -36,6 +42,24 @@ def guard_waking_stage(stage_class, bridge, ingress=None):
                 event.stop_event()
                 return
             try:
+                agent = getattr(active_ingress, "agent", None)
+                if agent:
+                    raw = getattr(event.message_obj, "raw_message", None)
+                    if isinstance(raw, dict) and raw.get("post_type") == "request":
+                        event.stop_event()
+                        await agent.inbox(raw, event.get_platform_id())
+                        return
+                    await agent.notice(raw)
+                    await agent.ensure_inventory()
+                    from .qq_agent import group_permission
+
+                    options = await agent.settings()
+                    if options["paused"] or (
+                        not event.is_private_chat()
+                        and not group_permission(options, event.get_group_id(), "read")
+                    ):
+                        event.stop_event()
+                        return
                 result = (
                     await active_ingress.authorize(event)
                     if active_ingress
@@ -69,6 +93,7 @@ def guard_waking_stage(stage_class, bridge, ingress=None):
 
     stage_class.process = process
     stage_class._companion_qq_guard = True
+    stage_class._companion_qq_guard_version = 3
 
 
 def configure_platform(config, folder):

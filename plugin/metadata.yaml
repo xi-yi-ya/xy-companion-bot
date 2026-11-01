@@ -1,6 +1,6 @@
 name: astrbot_plugin_companion_memory
 display_name: Bot 设置
 desc: 三层人设、PG 记忆、人工审批、文件图片解析、联网与 QQ 主动联系。
-version: v0.8.0
+version: v0.10.0
 author: Owner
 repo: https://github.com/xi-yi-ya/xy-companion-bot

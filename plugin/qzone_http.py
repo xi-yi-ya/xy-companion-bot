@@ -14,6 +14,7 @@ from .qzone_read.utils import extract_callback_json
 INDEX = "https://h5.qzone.qq.com/mqzone/index"
 ACTIVE = "https://h5.qzone.qq.com/webapp/json/mqzone_feeds/getActiveFeeds"
 LEGACY = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more"
+USER_FEEDS = "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6"
 COOKIE_KEYS = {"uin", "p_uin", "skey", "p_skey", "pt4_token", "ptcz", "RK"}
 
 
@@ -55,8 +56,8 @@ def decode_payload(text):
         return data
 
 
-def normalize_posts(payload, account):
-    _, entries = extract_feed_page(payload)
+def normalize_posts(payload, account, *, default_author=0):
+    _, entries = extract_feed_page(payload, default_hostuin=default_author)
     result = []
     seen = set()
     for entry in entries[:40]:
@@ -99,7 +100,9 @@ class QzoneReader:
         self.credentials, self.transport = credentials, transport
         self.trace = []
 
-    async def fetch(self):
+    async def fetch(self, target_qq=""):
+        if target_qq and not re.fullmatch(r"[1-9][0-9]{4,12}", str(target_qq)):
+            raise QzoneReadError("需要有效的目标 QQ 号")
         account, cookies = await self.credentials()
         identity = str(cookies.get("p_uin") or cookies.get("uin") or "").lstrip("o0")
         if identity != str(int(account)) or not (cookies.get("p_skey") or cookies.get("skey")):
@@ -124,7 +127,12 @@ class QzoneReader:
                             "redirect_path": location.path,
                         }
                     )
-                    if allow_home and response.status_code in (301, 302, 303, 307, 308) and location.hostname == "user.qzone.qq.com" and location.path.rstrip("/") == "/" + str(account):
+                    if (
+                        allow_home
+                        and response.status_code in (301, 302, 303, 307, 308)
+                        and location.hostname == "user.qzone.qq.com"
+                        and location.path.rstrip("/") == "/" + str(account)
+                    ):
                         return ""
                     if response.status_code in (301, 302, 303, 307, 308, 401, 403):
                         raise QzoneReadError("空间登录态需要更新，自动浏览本轮已停止")
@@ -138,10 +146,43 @@ class QzoneReader:
                     text = b"".join(chunks).decode("utf-8", errors="replace")
                     title = re.search(r"<title[^>]*>(.*?)</title>", text, re.S | re.I)
                     callback = re.search(r"([A-Za-z_$][\w.$]*)\s*\(\s*[\[{]", text)
-                    self.trace[-1].update(content_type=response.headers.get("content-type", ""), bytes=size, html_title=title[1][:100] if title else None, callback=callback[1] if callback else None, login_page=bool(re.search(r"ptlogin|请先登录|登录超时", text[:20000], re.I)))
+                    self.trace[-1].update(
+                        content_type=response.headers.get("content-type", ""),
+                        bytes=size,
+                        html_title=title[1][:100] if title else None,
+                        callback=callback[1] if callback else None,
+                        login_page=bool(
+                            re.search(r"ptlogin|请先登录|登录超时", text[:20000], re.I)
+                        ),
+                    )
                     return text
 
             gtk = cookie_gtk(cookies)
+            if target_qq:
+                payload = decode_payload(
+                    await get(
+                        USER_FEEDS,
+                        {
+                            "uin": target_qq,
+                            "hostUin": target_qq,
+                            "pos": 0,
+                            "num": 20,
+                            "replynum": 5,
+                            "format": "json",
+                            "code_version": 1,
+                            "need_comment": 1,
+                            "need_private_comment": 0,
+                            "g_tk": gtk,
+                        },
+                    )
+                )
+                if not isinstance(payload, dict) or any(
+                    payload.get(k) not in (None, 0, "0") for k in ("ret", "code", "err")
+                ):
+                    raise QzoneReadError("目标空间未返回有权读取的动态，请检查访问权限或登录态")
+                return str(account), normalize_posts(
+                    payload, account, default_author=int(target_qq)
+                )
             index = await get(INDEX, {"g_tk": gtk}, allow_home=True)
             token = ""
             try:
@@ -160,7 +201,9 @@ class QzoneReader:
                 params["qzonetoken"] = token
             try:
                 payload = decode_payload(await get(ACTIVE, params))
-                active_ok = isinstance(payload, dict) and not any(payload.get(k) not in (None, 0, "0") for k in ("ret", "code", "err"))
+                active_ok = isinstance(payload, dict) and not any(
+                    payload.get(k) not in (None, 0, "0") for k in ("ret", "code", "err")
+                )
             except (QzoneReadError, httpx.HTTPError):
                 active_ok = False
             if not active_ok:

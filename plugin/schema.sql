@@ -102,6 +102,34 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_person_time ON messages(person_id, created_at);
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id, id DESC);
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS platform text;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS platform_id text;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS chat_type text NOT NULL DEFAULT 'private' CHECK(chat_type IN ('private','group'));
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS group_id text;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_id text;
+-- Provenance is separate from memory ownership. Only infer known legacy formats.
+UPDATE messages SET chat_type='group'
+WHERE chat_type='private' AND (person_id LIKE 'qqgroup:%' OR conversation_id LIKE '%:GroupMessage:%');
+UPDATE messages SET platform=CASE
+    WHEN person_id LIKE 'qqgroup:%' OR conversation_id LIKE 'companion_qq:%' THEN 'aiocqhttp'
+    WHEN conversation_id LIKE 'webchat:%' THEN 'webchat' ELSE NULL END
+WHERE platform IS NULL;
+UPDATE messages SET platform_id=split_part(conversation_id,':',1)
+WHERE platform_id IS NULL AND conversation_id ~ '^[^:]+:(FriendMessage|GroupMessage):';
+UPDATE messages SET group_id=split_part(person_id,':',3)
+WHERE group_id IS NULL AND person_id ~ '^qqgroup:[^:]+:[0-9]+:';
+UPDATE messages SET platform_id=split_part(person_id,':',2)
+WHERE platform_id IS NULL AND person_id LIKE 'qqgroup:%';
+UPDATE messages SET group_id=substring(conversation_id from ':GroupMessage:(?:[^:]*_)?([0-9]+)$')
+WHERE group_id IS NULL AND chat_type='group';
+UPDATE messages SET sender_id=CASE
+    WHEN role='user' AND person_id ~ '^qqgroup:[^:]+:[0-9]+:[0-9]+$' THEN split_part(person_id,':',4)
+    WHEN role='user' AND chat_type='group' THEN substring(content from '^\[群成员 [^\n]*（QQ ([0-9]+)） 发言\]')
+    WHEN role='assistant' AND person_id ~ '^qqgroup:[^:]+:[0-9]+:room:[0-9]+$' THEN split_part(person_id,':',5)
+    WHEN role='user' AND platform='aiocqhttp' AND conversation_id ~ ':FriendMessage:[0-9]+$' THEN split_part(conversation_id,':',3)
+    ELSE NULL END
+WHERE sender_id IS NULL;
+CREATE INDEX IF NOT EXISTS messages_source ON messages(platform,chat_type,group_id,id DESC);
 CREATE TABLE IF NOT EXISTS memories (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     person_id text NOT NULL REFERENCES persons(id),
@@ -215,10 +243,20 @@ CREATE TABLE IF NOT EXISTS qzone_runs(id uuid PRIMARY KEY,account_qq text NOT NU
 CREATE TABLE IF NOT EXISTS qzone_posts(key text PRIMARY KEY,account_qq text NOT NULL,author_qq text NOT NULL,payload jsonb NOT NULL,posted_at timestamptz,first_seen timestamptz NOT NULL,last_seen timestamptz NOT NULL,reviewed boolean NOT NULL DEFAULT false,review jsonb);
 CREATE TABLE IF NOT EXISTS qzone_candidates(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,post_key text NOT NULL UNIQUE REFERENCES qzone_posts(key),account_qq text NOT NULL,score double precision NOT NULL CHECK(score BETWEEN 0 AND 1),note text NOT NULL,reason text NOT NULL,status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','shared','unknown','dismissed')),delivery_id uuid REFERENCES proactive_deliveries(id),created_at timestamptz NOT NULL);
 CREATE INDEX IF NOT EXISTS qzone_candidate_pending ON qzone_candidates(account_qq,status,created_at);
+CREATE TABLE IF NOT EXISTS qzone_publish_settings(id boolean PRIMARY KEY DEFAULT true CHECK(id),payload jsonb NOT NULL,revision bigint NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS qzone_publish_state(account_qq text PRIMARY KEY,current_run uuid,lease_until timestamptz,next_consider_at timestamptz,last_error text,consecutive_failures integer NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS qzone_publications(id uuid PRIMARY KEY,account_qq text NOT NULL,status text NOT NULL CHECK(status IN ('generating','skipped','blocked','cancelled','publishing','sent','unknown','failed')),text text NOT NULL DEFAULT '',reason text NOT NULL DEFAULT '',error text,fingerprint text,persona_version bigint,created_at timestamptz NOT NULL,remote_started_at timestamptz,finished_at timestamptz,post_id text,url text);
+CREATE INDEX IF NOT EXISTS qzone_publications_limits ON qzone_publications(account_qq,remote_started_at);
+CREATE TABLE IF NOT EXISTS qq_agent_settings(id boolean PRIMARY KEY DEFAULT true CHECK(id),payload jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS qq_agent_accounts(account_qq text PRIMARY KEY,initialized_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS qq_requests(id text PRIMARY KEY,account_qq text NOT NULL,platform_id text NOT NULL,kind text NOT NULL CHECK(kind IN ('friend','group')),sub_type text NOT NULL,user_id text NOT NULL,group_id text,flag text NOT NULL,comment text NOT NULL,status text NOT NULL DEFAULT 'pending',created_at timestamptz NOT NULL DEFAULT now(),decided_at timestamptz);
+CREATE TABLE IF NOT EXISTS qq_operations(id uuid PRIMARY KEY,account_qq text NOT NULL,action text NOT NULL,idempotency_key text NOT NULL,actor text NOT NULL,metadata jsonb NOT NULL,status text NOT NULL,message_id text,error text,created_at timestamptz NOT NULL DEFAULT now(),finished_at timestamptz,recalled_at timestamptz,UNIQUE(account_qq,idempotency_key));
+CREATE TABLE IF NOT EXISTS qq_assets(id uuid PRIMARY KEY,name text NOT NULL,path text NOT NULL,size bigint NOT NULL,kind text NOT NULL CHECK(kind IN ('image','file')),created_at timestamptz NOT NULL DEFAULT now());
 CREATE OR REPLACE VIEW message_context AS
 SELECT m.id,m.person_id,m.conversation_id,m.event_id,m.role,
     m.content || coalesce(a.body,'') AS content,m.created_at,
-    CASE WHEN a.body IS NULL THEN m.token_count ELSE NULL END AS token_count
+    CASE WHEN a.body IS NULL THEN m.token_count ELSE NULL END AS token_count,
+    m.platform,m.platform_id,m.chat_type,m.group_id,m.sender_id
 FROM messages m LEFT JOIN LATERAL (
     SELECT string_agg(context_text,E'\n' ORDER BY created_at,id) AS body FROM message_attachments WHERE message_id=m.id
 ) a ON true;

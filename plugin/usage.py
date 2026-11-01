@@ -73,6 +73,11 @@ class UsageRecorder:
 
     async def save(self, uid, scope, start, elapsed, first, result, usage, error, planned):
         raw, inp, out, hit, miss = read_usage(usage)
+        raw = {
+            **raw,
+            "offered_tools": scope.get("offered_tools", []),
+            "network_route": scope.get("network_route"),
+        }
         low, high = cost_range(hit, miss, out, start) if inp is not None else (None, None)
         choices = getattr(result, "choices", None) or []
         reason = getattr(choices[0], "finish_reason", None) if choices else None
@@ -146,6 +151,18 @@ class UsageRecorder:
         async def create(*args, **kwargs):
             policy = await self.policy.get()
             scope = dict(SCOPE.get())
+            scope["network_route"] = (
+                "deepseek_direct"
+                if getattr(getattr(provider.client, "_client", None), "__dict__", {}).get(
+                    "_companion_deepseek_direct"
+                )
+                else "provider_default"
+            )
+            scope["offered_tools"] = [
+                t.get("function", {}).get("name")
+                for t in kwargs.get("tools", [])
+                if isinstance(t, dict)
+            ]
             maximum = scope.get("max_output", policy["reply_output"])
             extra = dict(kwargs.get("extra_body") or {})
             extra.pop("max_tokens", None)
