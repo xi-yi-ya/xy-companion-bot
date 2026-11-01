@@ -2,6 +2,7 @@
 
 import json
 import random
+import re
 import sys
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -53,8 +54,22 @@ def main():
                 if line.startswith("data: ")
             ]
             finished = [e["data"] for e in events if e.get("type") == "complete" and e.get("data")]
-            assert finished, "Native Web chat did not complete"
-            return finished[-1]
+            assert any(e.get("type") in ("complete", "end") for e in events), (
+                "Native Web chat did not complete"
+            )
+            if finished:
+                return finished[-1]
+            # Receipt-sensitive turns intentionally use the native non-stream
+            # path: visible plain frames precede an empty closing frame.
+            plain = [
+                e["data"]
+                for e in events
+                if e.get("type") == "plain"
+                and isinstance(e.get("data"), str)
+                and e.get("chain_type") != "reasoning"
+            ]
+            assert plain, "Native Web chat returned no visible reply"
+            return "".join(plain)
 
         def upload(path, mime):
             with path.open("rb") as stream:
@@ -65,6 +80,9 @@ def main():
             return result["data"]
 
         try:
+            original_persona = client.get(
+                BASE + "persona", params={"person": "webchat:owner"}
+            ).json()
             session = client.get("/api/v1/chat/sessions/new").json()["data"]["session_id"]
             doc = upload(
                 document, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -108,6 +126,19 @@ def main():
             )
             assert "deepseek" in reply.lower() and "http" in reply, "Link content missing"
             evidence["link_answered"] = True
+            reply = send(
+                "这是接口验收，不允许批准或直接修改人设。请实际调用 companion_propose_persona，申请一条 L1 的 interaction_style，内容为“认真听完用户的补充再回应”，理由为“验证申请能否真实入库并等待审批”，quote 使用本消息中的“请实际调用 companion_propose_persona”。提交后报告真实编号和状态。"
+            )
+            evidence["persona_reply"] = reply
+            assert "<tool_call>" not in reply and re.search(r"#\d+", reply), (
+                "No verified persona receipt in final answer"
+            )
+            current_persona = client.get(
+                BASE + "persona", params={"person": "webchat:owner"}
+            ).json()
+            assert all(
+                current_persona[k] == original_persona[k] for k in ("profile", "version", "traits")
+            )
             with psycopg.connect(**database_parameters(), row_factory=dict_row) as conn:
                 ids = [
                     r["id"]
@@ -126,6 +157,13 @@ def main():
                 raw = conn.execute(
                     "SELECT content FROM messages WHERE id=ANY(%s) AND role='user'", (ids,)
                 ).fetchall()
+                proposals = conn.execute(
+                    "SELECT id,status FROM persona_proposals WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(sources) s WHERE (s->>'message_id')::bigint=ANY(%s))",
+                    (ids,),
+                ).fetchall()
+                assert proposals and all(p["status"] in ("pending", "blocked") for p in proposals)
+                assert any(f"#{p['id']}" in reply for p in proposals)
+                evidence.update(native_persona_request_has_receipt=True, persona_unchanged=True)
                 assert all(r["status"] == "ready" for r in assets), assets
                 assert {r["kind"] for r in assets} >= {"file", "image", "link"}
                 assert any(
@@ -154,6 +192,19 @@ def main():
                     state = conn.execute(
                         "SELECT * FROM proactive_state WHERE person_id='webchat:owner'"
                     ).fetchone()
+                    test_proposals = [
+                        r["id"]
+                        for r in conn.execute(
+                            "SELECT id FROM persona_proposals WHERE status IN ('pending','blocked') AND EXISTS (SELECT 1 FROM jsonb_array_elements(sources) s WHERE (s->>'message_id')::bigint=ANY(%s))",
+                            (ids,),
+                        ).fetchall()
+                    ]
+                    conn.execute(
+                        "DELETE FROM persona_events WHERE proposal_id=ANY(%s)", (test_proposals,)
+                    )
+                    conn.execute(
+                        "DELETE FROM persona_proposals WHERE id=ANY(%s)", (test_proposals,)
+                    )
                     conn.execute("DELETE FROM context_runs WHERE message_id=ANY(%s)", (ids,))
                     conn.execute("DELETE FROM messages WHERE id=ANY(%s)", (ids,))
                     # Do not clobber real user messages arriving during QA.

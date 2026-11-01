@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-import re
 import runpy
 import secrets
 import shutil
@@ -12,6 +11,7 @@ from pathlib import Path
 
 from psycopg.conninfo import make_conninfo
 
+from api_credentials import load_deepseek_key
 from local_instance import InstanceGuard, instance_id
 from local_secrets import database_parameters
 
@@ -25,11 +25,7 @@ def prepare():
     if not settings_path.exists():
         shutil.copyfile(ROOT / "local_config.json.example", settings_path)
     settings = json.loads(settings_path.read_text("utf-8"))
-    text = Path(settings["deepseek_key_file"]).read_text("utf-8-sig").strip()
-    match = re.search(r"sk-[A-Za-z0-9_-]{12,}", text)
-    if not match:
-        raise ValueError("No API key found in the configured credential file")
-    os.environ["DEEPSEEK_API_KEY"] = match.group()
+    os.environ["DEEPSEEK_API_KEY"] = load_deepseek_key(settings)
     os.environ["COMPANION_DATABASE_DSN"] = make_conninfo(**database_parameters())
     os.environ["COMPANION_PROVIDER_ID"] = settings["provider_id"]
     os.environ["COMPANION_EMBEDDING_DIR"] = str(RUNTIME / "models/bge-small-zh-v1.5")
@@ -119,6 +115,9 @@ def prepare():
     compression.update(max_turns=-1, fallback_max_tokens=1048576)
     config["agent_runner"]["config"]["misc"]["max_steps"] = 10
     config["provider_settings"]["datetime_system_prompt"] = False
+    config["platform_settings"].update(
+        reply_with_quote=False, reply_with_mention=False, ignore_at_all=True, unique_session=True
+    )
     from plugin.qq import configure_platform
 
     configure_platform(config, RUNTIME / "qq")

@@ -2,7 +2,9 @@
 
 AstrBot v4.29.4（`61335414433db721b3f7ecc93f90deafe0a59d78`）+ 自研插件 + 本机 PostgreSQL。
 
-[后续研究方向](docs/RESEARCH_ROADMAP.md)：群聊观察与私聊分享、自主浏览 B站 / 小红书。当前仅记录方向，暂不实施；引用、群聊 @ 和 1 秒消息合并的调研状态也记录在其中。
+[QQ 聊天能力](docs/QQ_CHAT.md)：引用理解与引用回复、群聊仅 @Bot 触发、连发停顿 1 秒后合并，人设申请返回真实入库回执。
+
+[后续研究方向](docs/RESEARCH_ROADMAP.md)：群聊观察与私聊分享、自主浏览 B站 / 小红书。当前仅记录方向，暂不实施。
 
 ## 启动与使用
 
@@ -31,7 +33,7 @@ GUI 与后端分别限制单实例。后台进程存在且 Web、插件、数据
 
 输出为 `runtime/desktop/CompanionBot/CompanionBot.exe`。构建使用临时的干净 PATH，防止 PostgreSQL 的同名 ICU DLL 被误打包；不会修改系统 PATH 或 PostgreSQL 安装。命令行回退入口仍可用 `.venv\Scripts\python.exe start.py`，管理入口为 `.venv\Scripts\python.exe manage_bot.py status|start|stop`。
 
-`local_config.json` 保存模型、Key 来源文件等本地配置。Key 仅在启动时从用户提供的文本文件读取，AstrBot 配置中保存环境变量引用 `$DEEPSEEK_API_KEY`。不要删除或移动来源文件，除非同时修改路径。
+`local_config.json` 保存模型和备用凭据文件路径。启动优先读取 Windows 当前用户环境变量 `DEEPSEEK_API_KEY`，其次进程环境，再回退到配置的 TXT / DOCX 文件；设置好用户环境变量后，不再依赖原临时文本文件。AstrBot 配置只保存环境变量引用 `$DEEPSEEK_API_KEY`。
 
 PostgreSQL 连接凭据在 `%USERPROFILE%\.codex\credentials\postgresql-local.json`，由 Windows 当前用户 DPAPI 加密；`local_secrets.py` 负责读取。本项目只使用 `companion_bot` 数据库。此凭据不能直接复制到其他 Windows 账号或另一台电脑使用。
 

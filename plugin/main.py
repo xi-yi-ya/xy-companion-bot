@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import At, Image, Plain, Reply
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, register
 from astrbot.api.web import error_response, json_response, request
@@ -22,7 +22,6 @@ from .attachments import (
     DATA_RULE,
     AttachmentReader,
     component_kind,
-    filename,
     prepare_attachments,
     render,
     save_attachments,
@@ -32,8 +31,18 @@ from .costs import monthly_scenarios
 from .embeddings import LocalEmbedding
 from .memory import TZ, MemoryStore, level
 from .persona import L0_FIELDS, L1_FIELDS, build_system_prompt, traits_hash
+from .persona_requests import (
+    PERSONA_TOOL_RULE,
+    needs_verified_output,
+    quoted_source,
+    sources_for,
+    submit,
+    verify_reply,
+)
 from .proactive import CONTACT_PROMPT, OWNER, ContactService
 from .qq import PLATFORM_ID, QQBridge, guard_waking_stage
+from .qq_chat import QQIngress, meaningful, raw_content, record_platform, snapshot
+from .quoted_messages import prepare_quotes
 from .token_counting import counter, tokens
 from .usage import SCOPE, UsageRecorder, usage_scope
 from .web_access import WEB_POLICY, WebAccess, WebTurn
@@ -75,7 +84,7 @@ PERSONA_DISCOVERY = """根据跨日用户交流，为陪伴 Bot 提出最多 3 �
 替换已有习惯时才填写 target_trait_id。所有候选都必须经过用户审批，不能自称已获授权。"""
 
 
-@register("astrbot_plugin_companion_memory", "Owner", "PostgreSQL companion memory", "0.5.0")
+@register("astrbot_plugin_companion_memory", "Owner", "PostgreSQL companion memory", "0.6.0")
 class CompanionMemory(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -87,6 +96,7 @@ class CompanionMemory(Star):
         )
         self.usage = UsageRecorder(self.store.pool, self.store.policy)
         self.qq = QQBridge(os.environ.get("COMPANION_QQ_DIR", "qq"), self.store.pool)
+        self.qq_ingress = QQIngress(self.qq, self.capture_message)
         self.contact_service = ContactService(
             self.store.contact,
             self.generate_contact,
@@ -129,7 +139,7 @@ class CompanionMemory(Star):
             )
 
     async def initialize(self):
-        guard_waking_stage(WakingCheckStage, self.qq)
+        guard_waking_stage(WakingCheckStage, self.qq, self.qq_ingress)
         await self.store.open()
         self.store.embedder = await asyncio.to_thread(
             LocalEmbedding, os.environ["COMPANION_EMBEDDING_DIR"]
@@ -148,6 +158,7 @@ class CompanionMemory(Star):
             self.usage.install(provider)
 
     async def terminate(self):
+        await self.qq_ingress.close()
         await self.contact_service.close()
         await self.qq.close()
         if self.task:
@@ -214,6 +225,7 @@ class CompanionMemory(Star):
                 chat_provider_id=self.provider_id,
                 system_prompt=system,
                 prompt=json.dumps(payload, ensure_ascii=False, default=str),
+                response_format={"type": "json_object"},
             )
         text = response.completion_text.strip()
         if text.startswith("```"):
@@ -289,11 +301,8 @@ class CompanionMemory(Star):
     async def qq_access(self, event: AstrMessageEvent):
         if event.get_platform_name() != "aiocqhttp":
             return
-        if not event.is_private_chat():
-            event.stop_event()
-            return
         try:
-            result = await self.qq.authorize(str(event.get_sender_id()), event.message_str)
+            result = await self.qq_ingress.authorize(event)
         except Exception as exc:
             event.stop_event()
             logger.error("QQ pairing failed: %s", type(exc).__name__)
@@ -305,38 +314,38 @@ class CompanionMemory(Star):
                     "绑定好了。之后这里和本地 Web 会共用我们的记忆与习惯，可以直接聊。"
                 )
 
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=100)
+    async def capture_message(self, event):
+        if not self.ready:
+            raise ValueError("记忆数据库尚未就绪")
+        return await self.store.record(
+            record_platform(event),
+            str(event.get_sender_id()),
+            str(event.unified_msg_origin),
+            str(event.message_obj.message_id),
+            "user",
+            raw_content(event),
+            datetime.fromtimestamp(float(event.message_obj.timestamp), UTC),
+        )
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=100)
     async def receive(self, event: AstrMessageEvent):
+        if not event.is_private_chat() and event.get_platform_name() != "aiocqhttp":
+            return
         if not self.ready:
             event.stop_event()
             yield event.plain_result("记忆数据库还未连接，请稍后再试。")
             return
         try:
-            components = event.message_obj.message
-            labels = [
-                f"[用户发送附件：{filename(getattr(c, 'name', None) or ('图片' if component_kind(c) == 'image' else '附件'))}]"
-                for c in components
-                if component_kind(c) in ("image", "file")
-            ]
-            if (
-                not event.message_str.strip()
-                and not labels
-                and not any(
-                    component_kind(c) in ("json", "reply", "record", "video") for c in components
-                )
-            ):
+            components = list(event.message_obj.message)
+            if not meaningful(event):
                 event.stop_event()
                 return
-            msg = await self.store.record(
-                event.get_platform_name(),
-                str(event.get_sender_id()),
-                str(event.unified_msg_origin),
-                str(event.message_obj.message_id),
-                "user",
-                event.message_str + ("\n" + "\n".join(labels) if labels else ""),
-                datetime.fromtimestamp(float(event.message_obj.timestamp), UTC),
-            )
+            msg = event.get_extra("companion_message") or await self.capture_message(event)
             event.set_extra("companion_message", msg)
+            if event.is_private_chat() and needs_verified_output(event.message_str):
+                # WebChat normally forces streaming. A persona-request receipt
+                # must be verified before any success claim reaches the UI.
+                event.set_extra("enable_streaming", False)
         except Exception as exc:
             logger.error("Companion database write failed: %s", type(exc).__name__)
             event.stop_event()
@@ -349,12 +358,12 @@ class CompanionMemory(Star):
             web_turn = WebTurn(web_settings["max_calls"], web_settings["context_budget"])
             event.set_extra("companion_web_turn", web_turn)
 
-            async def caption(path):
+            async def caption(path, source):
                 await self.meter_provider()
                 with usage_scope(
                     "attachment_vision",
-                    person_id=msg["person_id"],
-                    message_id=msg["id"],
+                    person_id=source["person_id"],
+                    message_id=source["id"],
                     max_output=4000,
                 ):
                     result = await self.context.llm_generate(
@@ -365,21 +374,43 @@ class CompanionMemory(Star):
                     )
                 return result.completion_text
 
-            async def fetch_link(url):
-                return await web_turn.run(self.web, msg["person_id"], msg["id"], "fetch", url)
-
+            batch = event.get_extra("companion_batch")
+            inputs = [(e.event, e.row) for e in batch] if batch else [(snapshot(event), msg)]
+            combined, blocks = [], []
             with self.activity.working("正在读取你发来的内容"):
                 async with asyncio.timeout(240):
-                    items = await prepare_attachments(
-                        event,
-                        self.attachments,
-                        caption,
-                        fetch_link,
-                        allow_links=web_settings["enabled"],
-                    )
-            if items:
-                await save_attachments(self.store.pool, msg["id"], items)
-                event.set_extra("companion_attachments", render(items))
+                    for source_event, source in inputs:
+
+                        async def read_image(path, source=source):
+                            return await caption(path, source)
+
+                        async def fetch_link(url, source=source):
+                            return await web_turn.run(
+                                self.web, source["person_id"], source["id"], "fetch", url
+                            )
+
+                        quotes = await prepare_quotes(
+                            source_event,
+                            self.attachments,
+                            read_image,
+                            fetch_link,
+                            allow_links=web_settings["enabled"],
+                        )
+                        items = await prepare_attachments(
+                            source_event,
+                            self.attachments,
+                            read_image,
+                            fetch_link,
+                            allow_links=web_settings["enabled"],
+                        )
+                        items.extend(quotes)
+                        if items:
+                            await save_attachments(self.store.pool, source["id"], items)
+                            blocks.append(f"[材料所属用户消息 #{source['id']}]" + render(items))
+                        combined.extend(source_event.get_messages())
+            event.message_obj.message = combined
+            if blocks:
+                event.set_extra("companion_attachments", "\n".join(blocks))
                 if not event.message_str.strip():
                     event.message_str = "请看看我发来的内容。"
         except Exception as exc:
@@ -399,7 +430,9 @@ class CompanionMemory(Star):
             return
         SCOPE.set({"category": "chat", "person_id": msg["person_id"], "message_id": msg["id"]})
         await self.meter_provider()
-        system, memory, history, _ = await self.companion_context(msg)
+        system, memory, history, _ = await self.companion_context(
+            msg, before_id=event.get_extra("companion_before_id")
+        )
         policy = await self.store.policy.get()
         event.set_extra(
             "companion_retrieval_budget",
@@ -408,6 +441,10 @@ class CompanionMemory(Star):
         req.contexts = history
         req.model = "deepseek-flash"
         req.system_prompt = system
+        if event.is_private_chat():
+            req.system_prompt += "\n" + PERSONA_TOOL_RULE
+        else:
+            req.system_prompt += "\n当前为公开群聊。只能使用当前群和发送者作用域的历史及引用材料；不要公开其他私聊的内容。全局人设修改只能由主人私聊提出。"
         if attachments := event.get_extra("companion_attachments"):
             req.extra_user_content_parts.append(TextPart(text=attachments).mark_as_temp())
         web_settings = await self.web.settings()
@@ -426,6 +463,7 @@ class CompanionMemory(Star):
                     t
                     for t in req.func_tool.tools
                     if t.name.startswith("companion_")
+                    and (event.is_private_chat() or t.name != "companion_propose_persona")
                     and (
                         web_settings["enabled"]
                         or t.name not in ("companion_web_search", "companion_read_web")
@@ -552,11 +590,21 @@ class CompanionMemory(Star):
     @filter.on_llm_response()
     async def generated(self, event: AstrMessageEvent, resp: LLMResponse):
         if resp.role == "assistant" and resp.completion_text and not resp.tools_call_name:
+            if event.is_private_chat() and event.get_extra("companion_message"):
+                resp.completion_text, checked_receipt = await verify_reply(
+                    resp.completion_text,
+                    sources_for(event),
+                    self.store,
+                    self.check_persona,
+                    event.get_extra("companion_persona_receipt"),
+                )
+                if checked_receipt:
+                    event.set_extra("companion_persona_receipt", checked_receipt)
             event.set_extra("companion_reply", resp.completion_text)
             msg = event.get_extra("companion_message")
             if msg:
                 await self.store.record(
-                    event.get_platform_name(),
+                    record_platform(event),
                     str(event.get_sender_id()),
                     msg["conversation_id"],
                     msg["event_id"],
@@ -589,13 +637,24 @@ class CompanionMemory(Star):
         text = text or event.get_extra("companion_reply", "")
         if text:
             await self.store.record(
-                event.get_platform_name(),
+                record_platform(event),
                 str(event.get_sender_id()),
                 msg["conversation_id"],
                 msg["event_id"],
                 "assistant",
                 text,
             )
+
+    @filter.on_decorating_result(priority=-100)
+    async def quote_qq_reply(self, event: AstrMessageEvent):
+        if event.get_platform_name() != "aiocqhttp" or not event.get_extra("companion_reply"):
+            return
+        result = event.get_result()
+        if not result or not all(isinstance(c, (Plain, Image)) for c in result.chain):
+            return
+        if not event.is_private_chat():
+            result.chain.insert(0, At(qq=str(event.get_sender_id())))
+        result.chain.insert(0, Reply(id=str(event.message_obj.message_id)))
 
     @filter.llm_tool(name="companion_search")
     async def search(self, event: AstrMessageEvent, query: str):
@@ -648,7 +707,8 @@ class CompanionMemory(Star):
         if not msg:
             return "No memory scope for this event"
         try:
-            await self.store.confirm(msg["person_id"], int(memory_id), msg["id"], quote)
+            source = quoted_source(sources_for(event), quote)
+            await self.store.confirm(source["person_id"], int(memory_id), source["id"], quote)
         except ValueError as exc:
             return str(exc)
         return "User confirmation recorded"
@@ -662,9 +722,13 @@ class CompanionMemory(Star):
             quote(string): Exact quotation of the user's denial or correction.
         """
         msg = event.get_extra("companion_message")
-        if not msg or not quote.strip() or quote not in msg["content"]:
+        if not msg:
             return "A matching current user quotation is required"
-        await self.store.invalidate(msg["person_id"], int(memory_id), quote)
+        try:
+            source = quoted_source(sources_for(event), quote)
+        except ValueError as exc:
+            return str(exc)
+        await self.store.invalidate(source["person_id"], int(memory_id), quote)
         return "Old memory invalidated; the daily job will extract the new fact with its source"
 
     @filter.llm_tool(name="companion_propose_persona")
@@ -692,26 +756,21 @@ class CompanionMemory(Star):
         if not msg:
             return "No user scope for this request"
         try:
-            proposal = await self.store.personas.propose(
-                msg["person_id"],
-                layer,
-                field,
-                new_value,
-                reason,
-                [{"message_id": msg["id"], "quote": quote}],
-                self.check_persona,
-                target_id=int(target_trait_id) or None,
-            )
-            return json.dumps(
+            result = await submit(
+                self.store,
+                sources_for(event),
                 {
-                    "proposal_id": proposal["id"],
-                    "status": proposal["status"],
-                    "applied": False,
-                    "instruction": "仅已提交申请，必须等待用户在 Bot 设置的人设审批页手动批准，不能将聊天同意视为授权。",
-                    "check": proposal["check_result"],
+                    "layer": layer,
+                    "field": field,
+                    "new_value": new_value,
+                    "reason": reason,
+                    "quote": quote,
+                    "target_trait_id": target_trait_id,
                 },
-                ensure_ascii=False,
+                self.check_persona,
             )
+            event.set_extra("companion_persona_receipt", result)
+            return json.dumps(result, ensure_ascii=False)
         except ValueError as exc:
             return str(exc)
 

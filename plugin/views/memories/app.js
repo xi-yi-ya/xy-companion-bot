@@ -20,7 +20,7 @@ function askConfirmation(text){
 }
 function sourceDetails(sources){const detail=document.createElement('details');detail.append(node('summary','来源证据'),node('pre',(sources||[]).map(s=>`消息 #${s.message_id}${s.day?' · '+s.day:''}：${s.quote}`).join('\n')));return detail;}
 function fieldLabel(p){return (p.layer==='L0'?personaState.l0_fields:personaState.l1_fields)[p.field]||p.field;}
-function showTab(name){for(const tab of document.querySelectorAll('[data-tab]')){const active=tab.dataset.tab===name;tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active));$(tab.dataset.tab+'-panel').hidden=!active;}}
+function showTab(name){for(const tab of document.querySelectorAll('[data-tab]')){const active=tab.dataset.tab===name;tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active));$(tab.dataset.tab+'-panel').hidden=!active;}if(name==='approvals'&&current)loadPersona().catch(e=>notice(e.message,true));}
 for(const button of document.querySelectorAll('[data-tab]'))button.onclick=()=>showTab(button.dataset.tab);
 async function busy(button,action){button.disabled=true;try{await action();}catch(e){notice(e.message,true);}finally{button.disabled=false;}}
 function readProfile(){return Object.fromEntries(Object.entries(profileFields).map(([field,id])=>[field,$(id).value]));}
@@ -85,6 +85,8 @@ async function loadQQ(){const data=unwrap(await bridge.apiGet('qq'));const phase
 $('refresh-qq').onclick=()=>busy($('refresh-qq'),async()=>{unwrap(await bridge.apiPost('qq/refresh',{}));await loadQQ();notice('QQ 二维码已刷新。');});
 if(new URLSearchParams(location.search).get('tab')==='qq')showTab('qq');
 let qqPolling=false;
+let approvalPolling=false;
+setInterval(async()=>{if($('approvals-panel').hidden||approvalPolling||document.querySelector('dialog[open]'))return;approvalPolling=true;try{await loadPersona();}catch(e){notice('修改审批暂时无法刷新：'+e.message,true);}finally{approvalPolling=false;}},15000);
 function contactTime(value){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';}
 async function loadContact(updateSettings=true){
   const data=unwrap(await bridge.apiGet('proactive')),s=data.settings,state=data.state;

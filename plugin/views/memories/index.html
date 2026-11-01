@@ -25,6 +25,7 @@
     <div class="qq-login"><img id="qq-qr" alt="Bot QQ 登录二维码" width="260" height="260" hidden><p>使用要交给 Bot 的 QQ 小号，在手机 QQ 中扫码并确认登录。此页会自动更新二维码，可留到早上再扫。</p></div>
     <div id="qq-pairing" class="callout" hidden><strong>第一次使用：绑定你的主号</strong><p>登录后，用平常和 Bot 聊天的主号加小号为好友，再把下面这一行私聊发给 Bot。完成后，两边会共用同一份陪伴记忆。</p><pre id="qq-bind"></pre><p class="hint">绑定口令只在本机页面显示。绑定前不读取聊天进模型；绑定后仅响应已绑定主号的私聊。</p></div>
     <p id="qq-owner" class="hint"></p>
+    <p class="hint">私聊仅接已绑定主号；群内成员明确 @Bot 才触发回答。QQ 连发消息停顿 1 秒后合并回复，群聊按群和发送人隔离。回复会引用最后一条消息，群回复同时 @ 提问者；被引用的正文、图片和文件可作为材料理解。</p>
     <p class="hint">QQ 客户端随 Bot 启停，登录状态保存在项目本地目录。电脑和 Bot 在线时才能聊天。</p>
     <p><a href="/companion/qq" target="_blank" rel="noopener">打开独立扫码页</a></p>
   </section>

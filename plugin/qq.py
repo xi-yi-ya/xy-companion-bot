@@ -20,21 +20,27 @@ PLATFORM_ID = "companion_qq"
 OWNER = "webchat:owner"
 
 
-def guard_waking_stage(stage_class, bridge):
+def guard_waking_stage(stage_class, bridge, ingress=None):
     """Pair and gate before native command/permission handling can reply."""
     stage_class._companion_qq_bridge = bridge
+    stage_class._companion_qq_ingress = ingress
     if getattr(stage_class, "_companion_qq_guard", False):
         return
     original = stage_class.process
 
     async def process(stage, event):
         if event.get_platform_name() == "aiocqhttp":
-            if not event.is_private_chat():
+            active_ingress = stage_class._companion_qq_ingress
+            if not active_ingress and not event.is_private_chat():
                 event.stop_event()
                 return
             try:
-                result = await stage_class._companion_qq_bridge.authorize(
-                    str(event.get_sender_id()), event.message_str
+                result = (
+                    await active_ingress.authorize(event)
+                    if active_ingress
+                    else await stage_class._companion_qq_bridge.authorize(
+                        str(event.get_sender_id()), event.message_str
+                    )
                 )
             except Exception:
                 event.stop_event()
@@ -48,6 +54,14 @@ def guard_waking_stage(stage_class, bridge):
                         )
                     )
                 return
+            if active_ingress:
+                try:
+                    if not await active_ingress.process(event):
+                        return
+                except Exception:
+                    event.stop_event()
+                    await event.send(event.plain_result("本地消息记录暂时不可用，请稍后重试。"))
+                    return
         return await original(stage, event)
 
     stage_class.process = process
