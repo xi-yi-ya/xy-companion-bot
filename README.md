@@ -2,6 +2,8 @@
 
 AstrBot v4.29.4（`61335414433db721b3f7ecc93f90deafe0a59d78`）+ 自研插件 + 本机 PostgreSQL。
 
+[后续研究方向](docs/RESEARCH_ROADMAP.md)：群聊观察与私聊分享、自主浏览 B站 / 小红书。当前仅记录方向，暂不实施；引用、群聊 @ 和 1 秒消息合并的调研状态也记录在其中。
+
 ## 启动与使用
 
 1. 双击桌面“陪伴Bot”快捷方式或本机 `runtime/desktop/CompanionBot/CompanionBot.exe`。也可用 `Start-Bot.vbs`、`Start-Bot.cmd` 或 `启动陪伴Bot.ps1` 打开托盘 GUI。服务已运行时会连接现有实例，重复打开只显示已有窗口。
