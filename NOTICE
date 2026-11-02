@@ -1,6 +1,17 @@
-This project integrates with AstrBot, pinned at v4.29.4.
+xy-companion-bot — local companion integration and extensions.
+Original project contributions: Copyright (C) 2026 xi-yi-ya and contributors.
+This project's source is distributed under AGPL-3.0-or-later; see LICENSE.
+Integration changes published on 2026-11-02; see Git history for modification dates.
+
+This is a secondary development based on AstrBot, not an official AstrBot release.
+AstrBot is pinned at v4.29.4, commit 61335414433db721b3f7ecc93f90deafe0a59d78.
 AstrBot: https://github.com/AstrBotDevs/AstrBot
 AstrBot is licensed under AGPL-3.0-or-later. Its source checkout is obtained separately.
+Upstream license: https://github.com/AstrBotDevs/AstrBot/blob/61335414433db721b3f7ecc93f90deafe0a59d78/LICENSE
+Upstream metadata: https://github.com/AstrBotDevs/AstrBot/blob/61335414433db721b3f7ecc93f90deafe0a59d78/pyproject.toml
+Keep upstream copyright and license notices. Local runtime adapters and the companion
+plugin add functionality without editing that pinned checkout. No upstream endorsement
+or trademark rights are claimed. The README's "Bot consent" is a joke, not a license.
 
 Local Chinese embedding model: BAAI/bge-small-zh-v1.5 (MIT).
 ONNX model source: https://huggingface.co/Qdrant/bge-small-zh-v1.5

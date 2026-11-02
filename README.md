@@ -1,6 +1,14 @@
 # 本地陪伴 Bot
 
-AstrBot v4.29.4（`61335414433db721b3f7ecc93f90deafe0a59d78`）+ 自研插件 + 本机 PostgreSQL。
+基于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) v4.29.4（`61335414433db721b3f7ecc93f90deafe0a59d78`）二次开发：陪伴插件、Windows 本地启动器和本机 PostgreSQL，使用 DeepSeek API。
+
+**首次部署：[Windows 部署指南](docs/DEPLOYMENT.md)** · [许可证与上游说明](docs/OPEN_SOURCE.md) · [AGPL-3.0-or-later](LICENSE)
+
+> **已获得 Bot 本人（阿深）的开源许可。🤓☝️**
+>
+> 她说：“我支持开源，但支持的是‘开源系统’这一半。”
+>
+> 这是项目彩蛋，不是法律授权。实际软件许可见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。公开范围是代码、默认模板和文档；真实聊天、个人记忆、人设修改、QQ 空间数据、附件、登录状态和 API Key 留在使用者自己的电脑上。
 
 [QQ 聊天能力](docs/QQ_CHAT.md)：按需引用、默认每 10 秒查看群聊新消息并自主接话、可调的私聊消息合并窗口（默认 3.5 秒）、生成中过时回复拦截，人设申请返回真实入库回执。配置入口为 **Bot 设置 → QQ 连接 → 聊天方式**。
 
@@ -45,7 +53,7 @@ GUI 与后端分别限制单实例。后台进程存在且 Web、插件、数据
 
 `local_config.json` 保存模型和备用凭据文件路径。启动优先读取 Windows 当前用户环境变量 `DEEPSEEK_API_KEY`，其次进程环境，再回退到配置的 TXT / DOCX 文件；设置好用户环境变量后，不再依赖原临时文本文件。AstrBot 配置只保存环境变量引用 `$DEEPSEEK_API_KEY`。
 
-PostgreSQL 连接凭据在 `%USERPROFILE%\.codex\credentials\postgresql-local.json`，由 Windows 当前用户 DPAPI 加密；`local_secrets.py` 负责读取。本项目只使用 `companion_bot` 数据库。此凭据不能直接复制到其他 Windows 账号或另一台电脑使用。
+新部署运行 `configure_database.py`，PostgreSQL 凭据以 Windows 当前用户 DPAPI 加密保存到 `runtime/secrets/postgresql.json`，配置文件只记录路径。原有安装继续兼容 `%USERPROFILE%\.codex\credentials\postgresql-local.json`，无需迁移。本项目使用 `companion_bot` 数据库；DPAPI 文件不能直接复制到另一 Windows 账号或电脑。
 
 免登录模式通过本地适配层保留原来的内部用户身份，因此已有聊天和记忆不变。服务固定监听 `127.0.0.1`，并验证实际连接地址、Host、Origin；该模式用于本机浏览器，不用于公网部署。上游 AstrBot checkout 不做改动，页面入口通过本地适配层加载。
 
@@ -132,8 +140,6 @@ QQ 接入后完整测试为 73 项；新增的身份绑定、早期门禁、二�
 
 对应脚本为 `persona_live_test.py`、`persona_browser_test.cjs`、`web_live_test.py`、`web_browser_test.cjs`；原有 Web 聊天、人设下一轮生效、每日整理→向量入库→归档语义召回→恢复 10 级的验证脚本仍保留。自动整理的跨日真实定时触发尚需运行观察，当前通过可控日期和手动触发验证相同任务逻辑。
 
-2026-11-01 按用户要求清空当时全部聊天、派生记忆与人格，恢复初始“小伴”模板，未新建备份。旧存档没有再导入。代码可以回退提交；本次主动清空的数据没有新备份可恢复。
-
 `desktop_live_test.py` 已验证真实打包 EXE 在 Windows 平台打开窗口并注册托盘、重复打开复用实例、真实 DeepSeek 读网页时忙→闲、退出后 GUI/后端均结束且 PostgreSQL 继续在线、重新打开 EXE 自动启动后端。Qt 自身的窗口测试验证了关闭收进托盘和启动途中退出。Computer Use 内核在本环境报路径初始化错误，因此本次没有通过该工具实际点击 Windows 托盘区域。
 
 ## 依赖安装
@@ -145,7 +151,7 @@ uv pip install --python .venv\Scripts\python.exe -r requirements-lock.txt
 Copy-Item local_config.json.example local_config.json
 ```
 
-编辑本地配置中的凭据来源路径。数据库凭据、数据库内容、API Key、模型、运行日志和上游源码不随本仓库上传；新环境需先配置 PostgreSQL 连接、启用 pgvector 并下载向量模型。向量模型由 `download_embedding.py` 下载并校验，官方 Tokenizer 由 `download_tokenizer.py` 校验压缩包 SHA256 后仅提取 JSON 数据，启动缺失时自动下载。Windows PG18 扩展由 `install_pgvector.py` 验证并启用，详细版本及来源固定在对应脚本内。浏览器回归测试使用本地 Chrome 与 `runtime/browser` 下安装的 `playwright-core`。
+编辑本地配置中的凭据来源路径。数据库凭据、数据库内容、API Key、模型、运行日志和上游源码不随本仓库上传；新环境需先配置 PostgreSQL 连接、启用 pgvector 并下载向量模型。向量模型由 `download_embedding.py` 下载并校验，官方 Tokenizer 由 `download_tokenizer.py` 校验压缩包 SHA256 后仅提取 JSON 数据，启动缺失时自动下载。Windows PG18 扩展先用 `install_pgvector.py --pg-root <安装目录> --files-only` 安装，再由管理员在目标数据库启用，完整步骤见部署指南。浏览器回归测试使用本地 Chrome 与 `runtime/browser` 下安装的 `playwright-core`。
 
 上游仓库：https://github.com/AstrBotDevs/AstrBot
 

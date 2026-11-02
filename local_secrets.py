@@ -3,10 +3,24 @@
 import base64
 import ctypes
 import json
+import os
 from ctypes import wintypes
 from pathlib import Path
 
 GLOBAL_DB = Path.home() / ".codex" / "credentials" / "postgresql-local.json"
+ROOT = Path(__file__).resolve().parent
+
+
+def credential_path():
+    """Project-local credentials for new installs; preserve existing global setup."""
+    configured = os.environ.get("COMPANION_DB_CREDENTIALS")
+    config = ROOT / "local_config.json"
+    if not configured and config.is_file():
+        configured = json.loads(config.read_text("utf-8-sig")).get("database_credentials_file")
+    if not configured:
+        return GLOBAL_DB
+    path = Path(configured).expanduser()
+    return path if path.is_absolute() else ROOT / path
 
 
 class Blob(ctypes.Structure):
@@ -40,8 +54,9 @@ def dpapi(value, decrypt=False):
         ctypes.windll.kernel32.LocalFree(target.data)
 
 
-def save_database(host, port, user, password):
-    GLOBAL_DB.parent.mkdir(parents=True, exist_ok=True)
+def save_database(host, port, user, password, *, path=None):
+    destination = Path(path) if path is not None else credential_path()
+    destination.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "host": host,
         "port": port,
@@ -50,11 +65,11 @@ def save_database(host, port, user, password):
         "protection": "Windows DPAPI current user",
         "default_database": "companion_bot",
     }
-    GLOBAL_DB.write_text(json.dumps(record, ensure_ascii=False, indent=2), "utf-8")
+    destination.write_text(json.dumps(record, ensure_ascii=False, indent=2), "utf-8")
 
 
 def database_parameters(database="companion_bot"):
-    record = json.loads(GLOBAL_DB.read_text("utf-8"))
+    record = json.loads(credential_path().read_text("utf-8"))
     return {
         "host": record["host"],
         "port": record["port"],

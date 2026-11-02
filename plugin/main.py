@@ -454,6 +454,19 @@ class CompanionMemory(Star):
             logger.warning("Companion sticker enqueue failed: %s", type(exc).__name__)
         return row
 
+    @filter.command("源码", alias={"开源", "source"})
+    async def source_info(self, event: AstrMessageEvent):
+        """Offer corresponding source and upstream attribution without an LLM call."""
+        text = (
+            "本项目基于 AstrBot 二次开发，采用 AGPL-3.0-or-later。\n"
+            "项目源码与部署文档：https://github.com/xi-yi-ya/xy-companion-bot\n"
+            "AstrBot 上游：https://github.com/AstrBotDevs/AstrBot\n"
+            "许可证及依赖说明见仓库 LICENSE / NOTICE；你的聊天、记忆和登录数据不随源码发布。"
+        )
+        event.set_extra("companion_reply", text)
+        event.stop_event()
+        yield event.plain_result(text)
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=100)
     async def receive(self, event: AstrMessageEvent):
         if not self.qq_ingress.current(event):

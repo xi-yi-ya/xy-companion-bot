@@ -1,5 +1,5 @@
 {
-  "deepseek_key_file": "D:\\keys\\deepseek.txt",
+  "deepseek_key_file": "",
   "model": "deepseek-flash",
   "provider_id": "companion_deepseek",
   "port": 6185

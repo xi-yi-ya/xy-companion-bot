@@ -1,6 +1,7 @@
 """Download a pinned public ONNX model; no remote Python code is executed."""
 
 import hashlib
+import os
 from pathlib import Path
 
 import requests
@@ -19,8 +20,7 @@ FILES = [
 ]
 EXPECTED = "1294ea4b6331115a353d81f96b85e8c8d7fdcc284453d5b2fab5b016230aad38"
 session = requests.Session()
-session.trust_env = False
-session.proxies = {"https": "http://127.0.0.1:7890"}
+endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
 for name in FILES:
     path = ROOT / name
     if path.exists() and (
@@ -31,7 +31,7 @@ for name in FILES:
     offset = partial.stat().st_size if partial.exists() else 0
     headers = {"Range": f"bytes={offset}-"} if offset else {}
     with session.get(
-        f"https://huggingface.co/Qdrant/bge-small-zh-v1.5/resolve/{REVISION}/{name}",
+        f"{endpoint}/Qdrant/bge-small-zh-v1.5/resolve/{REVISION}/{name}",
         headers=headers,
         stream=True,
         timeout=(15, 90),
