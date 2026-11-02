@@ -231,6 +231,19 @@ CREATE TABLE IF NOT EXISTS proactive_deliveries(
     created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),sent_at timestamptz
 );
 CREATE UNIQUE INDEX IF NOT EXISTS proactive_delivery_once ON proactive_deliveries(person_id,source_user_id) WHERE status IN ('sending','sent','unknown');
+-- Additive only: share the existing lock, in-flight reservation and no-reply gate.
+ALTER TABLE proactive_state ADD COLUMN IF NOT EXISTS followup_due timestamptz;
+ALTER TABLE proactive_state ADD COLUMN IF NOT EXISTS followup_expires timestamptz;
+ALTER TABLE proactive_state ADD COLUMN IF NOT EXISTS followup_source bigint;
+ALTER TABLE proactive_state ADD COLUMN IF NOT EXISTS followup_reason text;
+ALTER TABLE proactive_deliveries ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'contact';
+CREATE TABLE IF NOT EXISTS followup_settings(id boolean PRIMARY KEY DEFAULT true CHECK(id),payload jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS rhythm_settings(id boolean PRIMARY KEY DEFAULT true CHECK(id),payload jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS qq_reply_runs(
+    source_id bigint PRIMARY KEY, status text NOT NULL, reason text,
+    sent_count integer NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS message_attachments(
     id uuid PRIMARY KEY,message_id bigint NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     kind text NOT NULL,name text NOT NULL,status text NOT NULL,path text,context_text text NOT NULL,error text,

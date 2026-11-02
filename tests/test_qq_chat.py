@@ -77,6 +77,23 @@ async def fake_capture(event):
     }
 
 
+async def test_empty_typing_notifications_do_not_cancel_real_reply():
+    ingress = QQIngress(Bridge(), fake_capture, quiet=0.01)
+    try:
+        real = Event("真实的一条消息")
+        assert await ingress.process(real)
+        assert ingress.current(real)
+        for _ in range(3):
+            notice = Event("", components=[])
+            assert await ingress.process(notice)
+            assert ingress.current(real)
+        command = Event("/源码", message_id="2")
+        assert await ingress.process(command)
+        assert not ingress.current(real)
+    finally:
+        await ingress.close()
+
+
 async def test_three_burst_messages_produce_one_ordered_batch():
     window = QuietWindow(0.04, 0.2)
     tasks = []

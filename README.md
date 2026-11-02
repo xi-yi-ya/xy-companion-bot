@@ -26,6 +26,8 @@
 
 ## 启动与使用
 
+新增 [QQ 拟人化消息节奏与主动续聊](docs/MESSAGE_RHYTHM.md)：自然分段最多 3 个气泡，新消息取消未发送部分；短期续聊默认 8～20 分钟择机判断，每 24 小时最多 2 次，未回复不追发。设置分别位于“QQ 连接”和“主动联系”，保留现有合并、引用、人设授权与 PG 记忆规则。文档包含架构、Starlit 参考核验边界、参数、成本及重启策略。
+
 1. 双击桌面“陪伴Bot”快捷方式或本机 `runtime/desktop/CompanionBot/CompanionBot.exe`。也可用 `Start-Bot.vbs`、`Start-Bot.cmd` 或 `启动陪伴Bot.ps1` 打开托盘 GUI。服务已运行时会连接现有实例，重复打开只显示已有窗口。
 2. 打开 `http://127.0.0.1:6185/#/chatbox`，本机免账号登录。
 3. 在 AstrBot 的 Chat 中创建会话并聊天。

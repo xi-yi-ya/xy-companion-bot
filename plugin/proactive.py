@@ -6,11 +6,13 @@ import math
 import random
 import re
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
 
+from .followup import FollowupMixin
 from .token_counting import tokens
 
 OWNER = "webchat:owner"
@@ -71,7 +73,7 @@ def next_allowed(at, settings):
     return datetime.combine(day, end, TZ).astimezone(UTC)
 
 
-class ContactStore:
+class ContactStore(FollowupMixin):
     def __init__(self, pool, rng=None):
         self.pool, self.rng = pool, rng or random.SystemRandom()
 
@@ -109,7 +111,8 @@ class ContactStore:
             """INSERT INTO proactive_state(person_id,last_user_id,last_user_at,due_at,interval_seconds)
             VALUES(%s,%s,%s,%s,%s) ON CONFLICT(person_id) DO UPDATE SET
             last_user_id=EXCLUDED.last_user_id,last_user_at=EXCLUDED.last_user_at,due_at=EXCLUDED.due_at,
-            interval_seconds=EXCLUDED.interval_seconds,awaiting_reply=false,current_run=NULL,attempts=0,updated_at=now()""",
+            interval_seconds=EXCLUDED.interval_seconds,awaiting_reply=false,current_run=NULL,attempts=0,
+            followup_due=NULL,followup_reason='user_returned',updated_at=now()""",
             (OWNER, message["id"], message["created_at"], due, seconds),
         )
         await conn.execute(
@@ -176,20 +179,33 @@ class ContactStore:
             ).fetchone()
             deliveries = await (
                 await conn.execute(
-                    "SELECT id,source_user_id,status,text,reason,error,created_at,sent_at,updated_at FROM proactive_deliveries WHERE person_id=%s ORDER BY created_at DESC LIMIT 20",
+                    "SELECT id,kind,source_user_id,status,text,reason,error,created_at,sent_at,updated_at FROM proactive_deliveries WHERE person_id=%s ORDER BY created_at DESC LIMIT 20",
                     (OWNER,),
                 )
             ).fetchall()
+            followup = await self.followup_config(conn)
+            last_followup = await (
+                await conn.execute(
+                    "SELECT status,reason,error,text,created_at,sent_at FROM proactive_deliveries WHERE person_id=%s AND kind='followup' ORDER BY created_at DESC LIMIT 1",
+                    (OWNER,),
+                )
+            ).fetchone()
         return {
             "settings": settings,
             "state": state,
             "deliveries": deliveries,
             "timezone": "Asia/Shanghai",
+            "followup": followup,
+            "last_followup": last_followup,
         }
 
     async def recover(self, now, startup=False):
         async with self.pool.connection() as conn:
             await self.lock(conn)
+            await conn.execute(
+                "UPDATE proactive_state SET followup_due=NULL,followup_reason='window_expired' WHERE followup_due IS NOT NULL AND followup_expires<%s",
+                (now,),
+            )
             rows = await (
                 await conn.execute(
                     "SELECT * FROM proactive_deliveries WHERE person_id=%s AND status IN ('generating','sending') AND (%s OR lease_until<=%s)",
@@ -208,10 +224,13 @@ class ContactStore:
                     ("unknown" if uncertain else "failed", row["id"]),
                 )
                 await conn.execute(
-                    "UPDATE proactive_state SET current_run=NULL,due_at=%s,awaiting_reply=%s,updated_at=now() WHERE person_id=%s AND current_run=%s",
+                    "UPDATE proactive_state SET current_run=NULL,due_at=CASE WHEN %s AND NOT %s THEN due_at ELSE %s END,awaiting_reply=%s,followup_reason=CASE WHEN %s THEN 'interrupted_no_retry' ELSE followup_reason END,updated_at=now() WHERE person_id=%s AND current_run=%s",
                     (
+                        row.get("kind") == "followup",
+                        uncertain,
                         None if uncertain else now + timedelta(minutes=5),
                         uncertain,
+                        row.get("kind") == "followup",
                         OWNER,
                         row["id"],
                     ),
@@ -237,11 +256,20 @@ class ContactStore:
             state = await (
                 await conn.execute("SELECT * FROM proactive_state WHERE person_id=%s", (OWNER,))
             ).fetchone()
+            if not state or state["awaiting_reply"] or state["current_run"]:
+                return None
+            latest = await (
+                await conn.execute(
+                    "SELECT max(id) AS n FROM messages WHERE person_id=%s AND role='user'", (OWNER,)
+                )
+            ).fetchone()
+            if latest["n"] != state["last_user_id"]:
+                return None
+            short = await self.followup_claim(conn, state, settings, now, target)
+            if short:
+                return short
             if (
                 not settings["enabled"]
-                or not state
-                or state["awaiting_reply"]
-                or state["current_run"]
                 or not state["due_at"]
                 or state["due_at"] > now
                 or state["attempts"] >= 3
@@ -280,6 +308,21 @@ class ContactStore:
         async with self.pool.connection() as conn:
             await self.lock(conn)
             settings = await self.config(conn)
+            if run.get("kind") == "followup":
+                await conn.execute(
+                    "UPDATE proactive_deliveries SET status=%s,reason=%s,error=%s,updated_at=now() WHERE id=%s AND status='generating'",
+                    (
+                        "failed" if failed else "skipped",
+                        reason[:500],
+                        reason[:120] if failed else None,
+                        run["id"],
+                    ),
+                )
+                await conn.execute(
+                    "UPDATE proactive_state SET current_run=NULL,followup_reason=%s WHERE person_id=%s AND current_run=%s",
+                    (reason[:500], OWNER, run["id"]),
+                )
+                return
             seconds = 300 if failed else self.draw(settings)
             due = next_allowed(now + timedelta(seconds=seconds), settings)
             await conn.execute(
@@ -309,6 +352,9 @@ class ContactStore:
                 )
             ).fetchone()
             candidate_id = result.get("qzone_candidate_id")
+            short = run.get("kind") == "followup"
+            policy = await self.followup_config(conn) if short else None
+            enabled = policy["enabled"] if short else settings["enabled"]
             qzone_ok = True
             if candidate_id is not None:
                 config = await (
@@ -330,13 +376,14 @@ class ContactStore:
                     and candidate
                 )
             if (
-                not settings["enabled"]
+                not enabled
                 or not qzone_ok
                 or not state
                 or state["current_run"] != run["id"]
                 or state["last_user_id"] != run["source_user_id"]
                 or latest["n"] != run["source_user_id"]
                 or next_allowed(now, settings) > now
+                or (short and (not state["followup_expires"] or now > state["followup_expires"]))
             ):
                 await conn.execute(
                     "UPDATE proactive_deliveries SET status='cancelled',reason='pre_send_check',updated_at=now() WHERE id=%s AND status='generating'",
@@ -402,12 +449,13 @@ class ContactStore:
 
 
 class ContactService:
-    def __init__(self, store, generate, send, available, busy, current, clock=None):
+    def __init__(self, store, generate, send, available, busy, current, clock=None, lane=None):
         self.store, self.generate, self.send = store, generate, send
         self.available, self.busy, self.current = available, busy, current
         self.clock = clock or (lambda: datetime.now(UTC))
         self.task = None
         self.last_error = None
+        self.lane = lane
 
     @staticmethod
     def validate(result):
@@ -447,8 +495,15 @@ class ContactService:
         except Exception as exc:
             await self.store.abort(run, type(exc).__name__, self.clock(), True)
             return
-        if not await self.store.begin_send(run, result, self.clock()):
-            return
+        async with self.lane(target) if self.lane else nullcontext():
+            if self.busy() or await self.available() != target or not await self.current(result):
+                await self.store.abort(run, "busy_or_target_or_persona_changed", self.clock())
+                return
+            if not await self.store.begin_send(run, result, self.clock()):
+                return
+            await self.deliver(run, result, target)
+
+    async def deliver(self, run, result, target):
         try:
             async with asyncio.timeout(30):
                 receipt = await self.send(target, result["text"])

@@ -23,6 +23,15 @@ def group_key(event):
     return (event.get_platform_id(), str(event.get_self_id()), str(event.get_group_id()))
 
 
+def delivery_key(event):
+    return (
+        event.get_platform_id(),
+        str(event.get_self_id()),
+        "private" if event.is_private_chat() else "group",
+        str(event.get_sender_id() if event.is_private_chat() else event.get_group_id()),
+    )
+
+
 def record_account(event):
     if event.get_extra("companion_group_scan"):
         return f"room:{event.get_self_id()}"
@@ -196,7 +205,7 @@ class QQIngress:
 
     def current(self, event):
         revision = event.get_extra("companion_input_revision")
-        return revision is None or self.revisions.get(chat_key(event)) == revision
+        return revision is None or self.revisions.get(delivery_key(event)) == revision
 
     async def authorize(self, event):
         if event.is_private_chat():
@@ -242,15 +251,18 @@ class QQIngress:
             event.unified_msg_origin = f"{event.get_platform_id()}:GroupMessage:scan_{event.get_self_id()}_{event.get_group_id()}"
         if not meaningful(event) and directly_mentioned(event):
             event.message_str = "[用户@了Bot]"
+        # QQ also delivers empty typing/notice events. Only real content or a
+        # command invalidates replies; otherwise typing notifications starve chat.
+        if meaningful(event):
+            key = delivery_key(event)
+            self.revisions[key] = self.revisions.get(key, 0) + 1
+            event.set_extra("companion_input_revision", self.revisions[key])
+            event.set_extra("companion_received_at", time.monotonic())
         # Keep framework commands responsive and out of an ordinary-chat burst.
         if not meaningful(event) or (
             not group_scan and event.message_str.lstrip().startswith(("/", "!"))
         ):
             return True
-        if event.is_private_chat():
-            key = chat_key(event)
-            self.revisions[key] = self.revisions.get(key, 0) + 1
-            event.set_extra("companion_input_revision", self.revisions[key])
         entries = await (self.groups if group_scan else self.window).collect(event, self.capture)
         if not entries:
             event.stop_event()

@@ -39,7 +39,12 @@
     <div class="actions"><button id="refresh-contact">刷新状态</button><button id="preview-contact">生成一次预览（不发送）</button><button id="test-contact">发送 QQ 连通测试</button></div>
     <p class="hint">预览会调用模型；只展示它想说的话，不消耗本轮联系机会。关闭再开启也不会跳过“等待你回复”。</p>
     <div id="contact-preview" aria-live="polite"></div>
-    <h3>最近的主动联系</h3><div id="contact-deliveries"></div>
+    <h3>短期主动续聊</h3>
+    <label class="toggle"><input id="followup-enabled" type="checkbox">偶尔延续尚未结束的话题</label>
+    <div class="budget-grid"><label>最短等待（分钟）<input id="followup-min" type="number" min="2" max="120"></label><label>最长等待（分钟）<input id="followup-max" type="number" min="2" max="120"></label><label>24 小时发送上限<input id="followup-limit" type="number" min="1" max="6"></label></div>
+    <p class="hint">独立开关，沿用上面的免打扰时段。到期不一定发送；收尾、等待你回答或离线过久会放弃。与你的 QQ 私聊完成后才安排；Web 新消息也会取消。短期或长期联系发出后，统一等待你回复。最多进行发送上限两倍的模型判断。</p>
+    <button id="save-followup">保存主动续聊</button><button id="preview-followup">预览一次续聊（不发送）</button><p id="followup-state" role="status"></p>
+    <h3>最近的主动联系与续聊</h3><div id="contact-deliveries"></div>
   </section>
   <section id="qq-panel" class="panel" hidden>
     <div class="section-heading"><div><h2>在 QQ 里继续聊天</h2><p>和本地 Web 共用人设、记忆和长期习惯。</p></div><button id="refresh-qq">刷新二维码</button></div>
@@ -56,6 +61,11 @@
     <p class="hint">没有新消息不调用模型；有新消息时先判断是否值得接话，可以保持安静。群内不同成员的发言一起理解并标明说话人，群记忆与私人记忆隔离。关闭扫描后恢复仅 @Bot 触发。其他私聊账号需在下方单独授权。</p>
     <button class="primary" id="save-qq-chat">保存聊天方式</button>
     <p class="hint">引用读取继续可用；按需模式下普通接话不带引用，明确指向某条输入时才引用。自主接话不强制 @ 成员，回应明确 @Bot 的提问时保留 @。</p>
+    <h3>拟人化消息节奏</h3>
+    <label class="toggle"><input id="rhythm-enabled" type="checkbox">自然等待与多气泡发送</label>
+    <div class="budget-grid"><label>最短延迟（秒）<input id="rhythm-min" type="number" min="0" max="10" step="0.1"></label><label>最长延迟（秒）<input id="rhythm-max" type="number" min="0" max="10" step="0.1"></label><label>分段策略<select id="rhythm-strategy"><option value="natural">自然段与完整句子</option><option value="paragraph">只按自然段</option><option value="single">单气泡</option></select></label></div>
+    <p class="hint">首条延迟扣除模型与合并窗口已花费的时间；后续气泡最多等 2.5 秒，最多 3 条。代码、链接、引用、列表等整段保留。新输入会取消未发送部分，已发消息不自动撤回。关闭后仍保留顺序、防重与取消保护。</p>
+    <button id="save-rhythm">保存消息节奏</button><button id="test-rhythm">向主号发送节奏测试</button><p id="rhythm-state" role="status"></p>
     <h3>最近的群聊扫描</h3><div id="group-scan-history"></div>
     <h3>账号权限与操作</h3>
     <div class="actions"><button id="qq-emergency">急停 QQ 活动</button><button id="refresh-qq-agent">刷新申请与操作记录</button></div>

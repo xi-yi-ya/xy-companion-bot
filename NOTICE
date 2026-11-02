@@ -39,3 +39,12 @@ Shared-library license texts are copied alongside the local GUI build.
 Process inspection: psutil 7.1.3 (BSD-3-Clause).
 Build tool: PyInstaller 6.22.3 (GPL with the PyInstaller bootloader exception).
 https://pyinstaller.org/
+
+Design reference for message pacing and short-term follow-ups:
+Starlit by Unclecheng-li — https://github.com/Unclecheng-li/starlit
+The publicly indexed README describes total-latency pacing, multi-bubble replies
+and guarded active-conversation continuations, and states MIT. On 2026-11-02,
+direct repository, connector and git access returned 404/Repository not found.
+The current source revision and LICENSE could not be verified. No Starlit code,
+assets or license text is copied or bundled; the implementation here is original.
+Any future code reuse requires checking the exact revision's license and notices.

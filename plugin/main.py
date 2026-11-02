@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from .attachments import (
 from .continuity import SUMMARY_PROMPT
 from .costs import monthly_scenarios
 from .embeddings import LocalEmbedding
+from .followup import FOLLOWUP_PROMPT
 from .group_scan import GroupScanner
 from .memory import TZ, MemoryStore, level
 from .message_sources import event_source
@@ -49,7 +51,15 @@ from .proactive import CONTACT_PROMPT, OWNER, ContactService
 from .provider_network import ensure_direct
 from .qq import PLATFORM_ID, QQBridge, guard_waking_stage
 from .qq_agent import QQAgent, group_permission, routed_arguments
-from .qq_chat import QQIngress, meaningful, raw_content, record_account, record_platform, snapshot
+from .qq_chat import (
+    QQIngress,
+    delivery_key,
+    meaningful,
+    raw_content,
+    record_account,
+    record_platform,
+    snapshot,
+)
 from .qq_custom_bridge import QQCustomBridge
 from .qq_policy import choose_quote, quote_target, recover_quote_reply
 from .quoted_messages import prepare_quotes
@@ -57,6 +67,7 @@ from .qzone import QZONE_REVIEW, QzoneService, qzone_read_call
 from .qzone_http import QzoneReader, QzoneReadError, parse_cookies
 from .qzone_publish import PUBLIC_CHECK, PUBLIC_WRITE, PublicationService, public_text_error
 from .qzone_publish_http import QzonePublisher
+from .rhythm import Rhythm
 from .token_counting import counter, split_text, tokens
 from .usage import SCOPE, UsageRecorder, usage_scope
 from .web_access import WEB_POLICY, WebAccess, WebTurn
@@ -120,14 +131,21 @@ class CompanionMemory(Star):
         self.qq_custom = self.qq_custom_bridge.service
         self.qq_ingress = QQIngress(self.qq, self.capture_message, policy=self.store.qq_chat)
         self.qq_ingress.agent = self.qq_agent
+        self.rhythm = Rhythm(self.store.pool)
         self.group_scan = GroupScanner(self.store, self.generate_group_decision)
         self.contact_service = ContactService(
             self.store.contact,
             self.generate_contact,
             self.send_contact,
             self.contact_target,
-            lambda: self.activity.snapshot()["busy"],
+            lambda: (
+                self.activity.snapshot()["busy"]
+                or bool(self.qq_ingress.window.pending or self.qq_ingress.groups.pending)
+            ),
             self.contact_persona_current,
+            lane=lambda target: self.rhythm.lane(
+                (PLATFORM_ID, str(target["self_id"]), "private", str(target["account"]))
+            ),
         )
         self.qzone_service = QzoneService(
             self.store.qzone,
@@ -173,6 +191,11 @@ class CompanionMemory(Star):
             ("qq/refresh", self.refresh_qq, ["POST"]),
             ("qq/chat", self.page_qq_chat, ["GET"]),
             ("qq/chat", self.save_qq_chat, ["POST"]),
+            ("qq/rhythm", self.page_rhythm, ["GET"]),
+            ("qq/rhythm", self.save_rhythm, ["POST"]),
+            ("qq/rhythm/test", self.test_rhythm, ["POST"]),
+            ("followup", self.save_followup, ["POST"]),
+            ("followup/preview", self.preview_followup, ["POST"]),
             ("qq/agent", self.page_qq_agent, ["GET"]),
             ("qq/agent", self.save_qq_agent, ["POST"]),
             ("qq/agent/pause", self.pause_qq_agent, ["POST"]),
@@ -215,6 +238,7 @@ class CompanionMemory(Star):
         self.qq_custom.embedder = self.store.embedder
         await self.qq_custom.recover()
         self.qq_custom.start()
+        await self.rhythm.recover()
         self.contact_service.start()
         self.qzone_service.start()
         self.publication_service.start()
@@ -245,6 +269,7 @@ class CompanionMemory(Star):
         await self.qzone_service.close()
         await self.qq_ingress.close()
         await self.contact_service.close()
+        await self.rhythm.close()
         await self.qq.close()
         if self.task:
             self.task.cancel()
@@ -658,6 +683,8 @@ class CompanionMemory(Star):
             req.system_prompt += "\n当前为公开群聊。只能使用当前群作用域的历史及引用材料；不要公开其他私聊的内容。消息标记了不同说话人，不能把他们的关系或事实混在一起。全局人设修改只能由主人私聊提出。自然接当前话题，不需要逐条回答每个人或总结扫描结果。"
             req.system_prompt += "可按需用 companion_sticker_search / companion_sticker_send 选择当前群可见的表情。只发当前群，仍受群附件权限约束。不要每条消息都发。"
         qq_options = await self.store.qq_chat.get()
+        if event.get_platform_name() == "aiocqhttp" and (await self.rhythm.settings())["enabled"]:
+            req.system_prompt += "\nQQ 回复长短按内容需要决定；自然闲聊可以简短。确有两三个独立意思时可用空行分段，不必每次分段，不输出气泡编号，不拆散代码、链接或引用。"
         if event.get_platform_name() == "aiocqhttp" and qq_options["quote_mode"] == "adaptive":
             ids = [str(e.row["id"]) for e in event.get_extra("companion_batch") or []] or [
                 str(msg["id"])
@@ -806,11 +833,16 @@ class CompanionMemory(Star):
         return {"umo": f"{PLATFORM_ID}:FriendMessage:{owner}", "account": owner, "self_id": bot}
 
     async def generate_contact(self, run=None, category="proactive"):
+        short = bool(run and run.get("kind") == "followup")
+        if short and category == "proactive":
+            category = "followup"
         source, before = await self.store.contact.latest()
         if not source or (run and source["id"] != run["source_user_id"]):
             return {"send": False, "text": "", "reason": "user_changed_or_no_history"}
         now = datetime.now(UTC)
-        candidate = await self.store.qzone.pending(await self.qzone_account() or "", now)
+        candidate = (
+            None if short else await self.store.qzone.pending(await self.qzone_account() or "", now)
+        )
         sharing = ""
         if candidate:
             sharing = (
@@ -830,12 +862,17 @@ class CompanionMemory(Star):
                 source, before_id=before, at=now, purpose=category
             )
             await self.meter_provider()
-            with usage_scope(category, person_id=OWNER, message_id=source["id"], max_output=1000):
+            with usage_scope(
+                category,
+                person_id=OWNER,
+                message_id=source["id"],
+                max_output=700 if short else 1000,
+            ):
                 response = await self.context.llm_generate(
                     chat_provider_id=self.provider_id,
                     system_prompt=system,
                     contexts=history,
-                    prompt=CONTACT_PROMPT
+                    prompt=(FOLLOWUP_PROMPT if short else CONTACT_PROMPT)
                     + sharing
                     + f"\n当前北京时间：{now.astimezone(TZ).isoformat(timespec='minutes')}\n距用户最后发言：{max(0, (now - source['created_at']).total_seconds()) / 3600:.1f}小时\n<reference_memories>\n{memory}\n</reference_memories>",
                     response_format={"type": "json_object"},
@@ -844,6 +881,8 @@ class CompanionMemory(Star):
             if text.startswith("```"):
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             result = ContactService.validate(json.loads(text))
+            if short and result["send"] and tokens(result["text"]) > 250:
+                raise ValueError("续聊超过短消息预算")
             if candidate and result["send"]:
                 url = candidate["payload"]["url"]
                 if url not in result["text"]:
@@ -882,6 +921,94 @@ class CompanionMemory(Star):
             worker_error=self.contact_service.last_error,
         )
         return json_response(json.loads(json.dumps(data, default=str, ensure_ascii=False)))
+
+    async def page_rhythm(self):
+        return json_response(
+            json.loads(
+                json.dumps(
+                    {
+                        "settings": await self.rhythm.settings(),
+                        "recent": await self.rhythm.recent(),
+                    },
+                    default=str,
+                )
+            )
+        )
+
+    async def save_rhythm(self):
+        try:
+            return json_response(
+                {"settings": await self.rhythm.save(await request.json(default={}))}
+            )
+        except ValueError as exc:
+            return error_response(str(exc))
+
+    async def save_followup(self):
+        try:
+            return json_response(
+                {"settings": await self.store.contact.save_followup(await request.json(default={}))}
+            )
+        except ValueError as exc:
+            return error_response(str(exc))
+
+    async def preview_followup(self):
+        try:
+            source, _ = await self.store.contact.latest()
+            result = await self.generate_contact(
+                {"kind": "followup", "source_user_id": source["id"]} if source else None,
+                category="followup_preview",
+            )
+            return json_response({"preview": result, "sent": False})
+        except Exception as exc:
+            return error_response("续聊预览未完成：" + type(exc).__name__)
+
+    async def test_rhythm(self):
+        """Explicit local UI diagnostic: only two marked bubbles to the bound owner."""
+        target = await self.contact_target()
+        if not target:
+            return error_response("QQ 尚未就绪或已急停")
+        source, _ = await self.store.contact.latest()
+        source_id = source["id"] if source else None
+        stamp = int(time.time()) // 60
+
+        async def current():
+            latest, _ = await self.store.contact.latest()
+            return (
+                await self.contact_target() == target
+                and (latest["id"] if latest else None) == source_id
+            )
+
+        async def send(text, index):
+            return await self.qq_agent.execute(
+                "send_private_msg",
+                {
+                    "user_id": int(target["account"]),
+                    "self_id": target["self_id"],
+                    "message": [{"type": "text", "data": {"text": text}}],
+                },
+                f"rhythm-test:{stamp}:{index}",
+                "owner_ui",
+                {
+                    "asset_kind": "text",
+                    "target_type": "private",
+                    "target_id": str(target["account"]),
+                    "diagnostic": True,
+                },
+                preflight=current,
+            )
+
+        async def record(text, index):
+            pass  # Technical diagnostics do not become shared memories or reset contact timers.
+
+        result = await self.rhythm.deliver(
+            (PLATFORM_ID, str(target["self_id"]), "private", str(target["account"])),
+            "【消息节奏测试 1/2】这是第一段技术验收消息，用来检查真实 QQ 的发送链路。\n\n【消息节奏测试 2/2】这是第二段；只测试发送间隔，不修改人设、记忆或主动联系计时。",
+            time.monotonic(),
+            current,
+            send,
+            record,
+        )
+        return json_response(result)
 
     async def save_contact(self):
         try:
@@ -974,6 +1101,8 @@ class CompanionMemory(Star):
 
     @filter.after_message_sent()
     async def sent(self, event: AstrMessageEvent):
+        if event.get_extra("companion_rhythm_handled"):
+            return
         msg = event.get_extra("companion_message")
         if not msg or not event.get_extra("companion_reply"):
             return
@@ -990,6 +1119,7 @@ class CompanionMemory(Star):
                 text,
                 source=event_source(event, "assistant"),
             )
+            await self.store.contact.note_reply(msg, text, datetime.now(UTC))
 
     @filter.on_decorating_result(priority=-100)
     async def quote_qq_reply(self, event: AstrMessageEvent):
@@ -1003,9 +1133,11 @@ class CompanionMemory(Star):
             )
         ):
             event.stop_event()
+            event.clear_result()
             return
         if not self.qq_ingress.current(event):
             event.stop_event()
+            event.clear_result()
             return
         if event.get_platform_name() != "aiocqhttp" or not event.get_extra("companion_reply"):
             return
@@ -1019,6 +1151,83 @@ class CompanionMemory(Star):
             )
         if target:
             result.chain.insert(0, Reply(id=target["id"]))
+        # Native image/tool messages keep their existing path. Text final replies
+        # are sent once here, bypassing AstrBot's independent regex segmenter.
+        if not all(isinstance(c, (Plain, Reply, At)) for c in result.chain):
+            return
+        msg = event.get_extra("companion_message")
+        if not msg:
+            return
+        event.stop_event()
+        event.set_extra("companion_rhythm_handled", True)
+        # STOP ends handler propagation, but AstrBot still runs its respond stage.
+        # Detach the result before manual delivery so it cannot send it a second time.
+        event.clear_result()
+        text = "".join(c.text for c in result.chain if isinstance(c, Plain))
+        kind = "private" if event.is_private_chat() else "group"
+        account = str(event.get_sender_id() if kind == "private" else event.get_group_id())
+
+        async def current():
+            identity = self.qq.snapshot()
+            return (
+                self.qq_ingress.current(event)
+                and not (await self.qq_agent.settings())["paused"]
+                and identity.get("online")
+                and str(identity.get("bot_qq")) == str(event.get_self_id())
+            )
+
+        async def send(part, index):
+            segments = []
+            if index == 0:
+                for c in result.chain:
+                    if isinstance(c, Reply):
+                        segments.append({"type": "reply", "data": {"id": str(c.id)}})
+                    elif isinstance(c, At):
+                        segments.append({"type": "at", "data": {"qq": str(c.qq)}})
+            segments.append({"type": "text", "data": {"text": part}})
+            return await self.qq_agent.execute(
+                "send_private_msg" if kind == "private" else "send_group_msg",
+                {
+                    "user_id" if kind == "private" else "group_id": int(account),
+                    "self_id": str(event.get_self_id()),
+                    "message": segments,
+                },
+                f"rhythm:{msg['id']}:{index}",
+                "reply_rhythm",
+                {
+                    "asset_kind": "text",
+                    "target_type": kind,
+                    "target_id": account,
+                    "source_message_id": msg["id"],
+                    "bubble": index,
+                },
+                preflight=current,
+            )
+
+        async def record(part, index):
+            await self.store.record(
+                record_platform(event),
+                record_account(event),
+                msg["conversation_id"],
+                f"{msg['event_id']}:bubble:{index}",
+                "assistant",
+                part,
+                source=event_source(event, "assistant"),
+            )
+
+        outcome = await self.rhythm.deliver(
+            delivery_key(event),
+            text,
+            event.get_extra("companion_received_at") or time.monotonic(),
+            current,
+            send,
+            record,
+            input_size=len(event.message_str),
+            source_id=msg["id"],
+        )
+        event.set_extra("companion_rhythm_result", outcome)
+        if outcome["status"] == "sent" and self.qq_ingress.current(event):
+            await self.store.contact.note_reply(msg, text, datetime.now(UTC))
 
     @filter.llm_tool(name="companion_reply_to")
     async def reply_to(self, event: AstrMessageEvent, message_id: str):
