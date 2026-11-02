@@ -1,7 +1,8 @@
 const bridge=window.AstrBotPluginView;
 const $=id=>document.getElementById(id);
 await bridge.ready();
-let current='', memories=[], filter='all', personaState, profileVersion, profileDirty=false, personaPolicyDirty=false;
+const current='webchat:owner';
+let memories=[], filter='all', personaState, profileVersion, profileDirty=false, personaPolicyDirty=false;
 const profileFields={name:'bot-name',personality:'persona',speech_style:'speech-style',boundaries:'boundaries',worldview:'worldview'};
 const statuses={checking:'检查中',pending:'待你批准',approved:'已批准',rejected:'已拒绝',blocked:'检查未通过',stale:'已过期，需重新申请'};
 $('day').value=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -71,8 +72,7 @@ function renderMemories(){
 }
 for(const button of document.querySelectorAll('[data-filter]'))button.onclick=()=>{filter=button.dataset.filter;for(const b of document.querySelectorAll('[data-filter]'))b.classList.toggle('active',b===button);renderMemories();};
 async function loadMemories(){
-  const data=unwrap(await bridge.apiGet('state',{person:current}));current=data.person;memories=data.memories;
-  $('people').replaceChildren(...data.people.map(p=>{const o=node('option',p.id==='webchat:owner'?'我（本地聊天）':p.id);o.value=p.id;return o;}));$('people').value=current;
+  const data=unwrap(await bridge.apiGet('state',{person:current}));memories=data.memories;
   $('jobs').textContent=JSON.stringify({jobs:data.jobs,recent_contexts:data.runs},null,2);renderMemories();
 }
 async function loadPersona(){
@@ -175,7 +175,6 @@ $('save-profile').onclick=()=>busy($('save-profile'),async()=>{unwrap(await brid
 $('save-budgets').onclick=()=>busy($('save-budgets'),async()=>{unwrap(await bridge.apiPost('budgets',{memory_budget:Number($('memory-budget').value),history_budget:Number($('history-budget').value)}));notice('预算已保存，下一条回复开始生效。');});
 for(const button of document.querySelectorAll('.refresh-persona'))button.onclick=()=>busy(button,async()=>{await loadPersona();notice(profileDirty?'申请与习惯已刷新，保留尚未保存的人设草稿。':'人设、习惯与申请已刷新。');});
 $('refresh').onclick=()=>busy($('refresh'),async()=>{await loadMemories();notice('记忆已刷新，等级未重置。');});
-$('people').onchange=async()=>{current=$('people').value;try{await loadMemories();await loadPersona();await loadWeb(false);await loadMetrics();notice('已切换互动用户。');}catch(e){notice(e.message,true);}};
 $('save-web').onclick=()=>busy($('save-web'),async()=>{unwrap(await bridge.apiPost('web',{enabled:$('web-enabled').checked,max_calls:Number($('web-calls').value),context_budget:Number($('web-budget').value)}));notice('联网设置已保存，下一条回复生效。');});
 $('refresh-web').onclick=()=>busy($('refresh-web'),async()=>{await loadWeb(false);notice('联网记录已刷新。');});
 $('discover').onclick=()=>busy($('discover'),async()=>{if(!current)throw new Error('先聊几句，让系统有交流依据。');notice('正在检查长期习惯候选，将按需调用 DeepSeek…');const result=unwrap(await bridge.apiPost('persona/discover',{person:current}));await loadPersona();notice(result.status==='insufficient_evidence'?'跨日证据还不够，暂时不生成长期习惯。':result.candidates!==undefined?`检查完成，生成 ${result.candidates} 条候选；批准前不生效。`:'今天的候选检查已处理或正在进行，不重复生成。');});
