@@ -19,7 +19,7 @@ function askConfirmation(text){
   actions.append(cancel,accept);dialog.append(heading,node('p',text,'confirmation-text'),actions);document.body.append(dialog);
   return new Promise(resolve=>{dialog.onclose=()=>{const accepted=dialog.returnValue==='confirm';dialog.remove();resolve(accepted);};dialog.oncancel=e=>{e.preventDefault();dialog.close('cancel');};cancel.onclick=()=>dialog.close('cancel');accept.onclick=()=>dialog.close('confirm');dialog.showModal();cancel.focus();});
 }
-function sourceDetails(sources){const detail=document.createElement('details');detail.append(node('summary','来源证据'),node('pre',(sources||[]).map(s=>`消息 #${s.message_id}${s.day?' · '+s.day:''}：${s.quote}`).join('\n')));return detail;}
+function sourceDetails(sources){const detail=document.createElement('details');const context=(sources||[]).some(s=>s.kind==='conversation_context');detail.append(node('summary',context?'关联对话背景（不表示用户要求或批准）':'来源证据'),node('pre',(sources||[]).map(s=>`消息 #${s.message_id}${s.day?' · '+s.day:''}：${s.quote}`).join('\n')));return detail;}
 function fieldLabel(p){return (p.layer==='L0'?personaState.l0_fields:personaState.l1_fields)[p.field]||p.field;}
 function showTab(name){for(const tab of document.querySelectorAll('[data-tab]')){const active=tab.dataset.tab===name;tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active));$(tab.dataset.tab+'-panel').hidden=!active;}if(name==='approvals'&&current)loadPersona().catch(e=>notice(e.message,true));}
 for(const button of document.querySelectorAll('[data-tab]'))button.onclick=()=>showTab(button.dataset.tab);
@@ -44,10 +44,18 @@ function renderProposals(){
   if(!personaState.proposals.length)$('proposals').append(node('p','暂时没有申请。Bot 提出具体修改后，会在这里等待你处理。','empty'));
   for(const p of personaState.proposals){
     const card=node('article','','memory-card proposal '+p.status);card.dataset.proposalId=p.id;
-    card.append(node('div',`#${p.id} · ${p.layer} ${fieldLabel(p)} · ${statuses[p.status]}${p.approved_by==='system_auto'?'（自主模式）':''} · ${p.person_id==='webchat:owner'?'主人':p.person_id} · 基于 v${p.base_version}`,'meta'));
+    card.append(node('div',`#${p.id} · ${p.layer} ${fieldLabel(p)} · ${p.status==='blocked'&&p.check_result.retryable?'检查暂时失败':statuses[p.status]}${p.approved_by==='system_auto'?'（自主模式）':''} · ${p.person_id==='webchat:owner'?'主人':p.person_id} · 基于 v${p.base_version}`,'meta'));
+    if(p.origin==='bot_self_request')card.append(node('p','Bot 自主申请 · 必须由你手动批准；关联对话仅用于说明背景。','hint'));
     const diff=node('div','','diff');for(const [label,value] of [['修改前',p.old_value||'（新增）'],['拟修改为',p.new_value]]){const cell=node('div');cell.append(node('strong',label),node('p',value,'content'));diff.append(cell);}card.append(diff);
     card.append(node('p',`修改理由：${p.reason}`),node('p',`一致性检查：${p.check_result.reason||'尚未完成'}`,'hint'),sourceDetails(p.sources));
     if(p.check_result.auto_deferred_reason)card.append(node('p',`等待处理：${p.check_result.auto_deferred_reason}`,'hint'));
+    if(p.status==='blocked'&&p.check_result.retryable){
+      const attempts=p.check_result.attempts||1;
+      card.append(node('p',`已检查 ${attempts}/3 次；重试间隔至少 60 秒，重试通过仍需手动批准。`,'hint'));
+      if(attempts<3){const button=node('button','重新检查');button.onclick=()=>busy(button,async()=>{
+        unwrap(await bridge.apiPost('persona/retry',{id:p.id}));await loadPersona();notice('检查结束，请查看申请的最新状态；未自动批准。');
+      });card.append(button);}
+    }
     if(p.status==='pending'){
       const actions=node('div','','actions');for(const [action,label] of [['approve','批准这项修改'],['reject','拒绝']]){const button=node('button',label,action==='approve'?'primary':'');button.onclick=()=>busy(button,async()=>{
         const question=action==='approve'?`确认授权这项修改？\n${p.layer} ${fieldLabel(p)}\n${p.old_value||'（新增）'}\n→ ${p.new_value}${p.layer==='L0'?'\n这会使旧申请过期，并暂停已有 L1。':''}`:'拒绝这项修改申请？';

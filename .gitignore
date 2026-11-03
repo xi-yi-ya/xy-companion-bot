@@ -12,3 +12,5 @@ __pycache__/
 *.log
 *.pem
 /github_publish.py
+# Optional extensions are local-only, outside the main project release.
+/extensions/

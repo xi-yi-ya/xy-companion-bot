@@ -104,8 +104,8 @@
     <h2>人设修改权限</h2>
     <label>执行模式<select id="persona-policy-mode"><option value="confirm">每次由我批准后生效</option><option value="auto">Bot 提出并通过检查后自动生效</option></select></label>
     <label>自动模式每天最多修改次数<input id="persona-auto-limit" type="number" min="1" max="20" value="4"></label><button id="save-persona-policy">保存人设权限</button>
-    <p class="hint">默认人工批准。自动模式仍检查与 L0 / 已有习惯的一致性并留日志；超限继续待审。切换开关不会自动批准以前的待审申请，聊天内容不能更改这个开关。</p>
-    <div class="section-heading"><div><h2>Bot 的设定修改申请</h2><p>Bot 有申请权限；只有你手动批准后才会执行。</p></div><button class="refresh-persona">刷新申请</button></div>
+    <p class="hint">允许 Bot 自主提出性格、表达或互动习惯的修改申请，无需你先要求她申请。Bot 自主申请始终由你手动批准；对话背景不等于授权。其他申请按此执行模式处理，自动模式仍做一致性检查并受每日上限约束。切换开关不会批准以前的待审申请，聊天内容不能更改开关。</p>
+    <div class="section-heading"><div><h2>Bot 的设定修改申请</h2><p>她可以主动提出具体修改和理由；自主申请只有你手动批准后才会执行。</p></div><button class="refresh-persona">刷新申请</button></div>
     <p class="callout">先查看具体差异和依据，再逐条批准或拒绝。聊天里的“同意”不代替这里的授权；检查未通过或已过期的申请不能批准。</p>
     <section id="proposals"></section>
   </section>

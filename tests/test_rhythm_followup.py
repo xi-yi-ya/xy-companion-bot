@@ -9,7 +9,7 @@ import pytest
 
 from plugin.followup import DEFAULT_FOLLOWUP, local_reason, validate_followup
 from plugin.proactive import DEFAULT_CONTACT, OWNER, ContactService
-from plugin.rhythm import DEFAULT_RHYTHM, Rhythm, bubbles, delay, validate_rhythm
+from plugin.rhythm import DEFAULT_RHYTHM, Rhythm, bubbles, delay, display_bubbles, validate_rhythm
 
 NOW = datetime(2026, 11, 2, 4, tzinfo=UTC)
 TARGET = {"umo": "companion_qq:FriendMessage:123", "account": "123", "self_id": "456"}
@@ -33,9 +33,10 @@ def test_structures_preserved(text):
     assert bubbles(text) == [text]
 
 
-def test_natural_bubbles_bounded_not_character_cut():
-    assert len(bubbles(TEXT)) == 3
-    assert len(bubbles(TEXT * 8)) <= 3
+def test_natural_bubbles_follow_boundaries_without_fixed_count():
+    assert len(bubbles(TEXT)) > 1
+    assert len(bubbles(TEXT * 8)) > 3
+    assert "".join(bubbles(TEXT * 8)) == TEXT * 8
     assert bubbles("你好") == ["你好"]
     assert bubbles("很长但是没有句子分隔符" * 80) == ["很长但是没有句子分隔符" * 80]
     assert bubbles(TEXT, "single") == [TEXT]
@@ -122,7 +123,7 @@ async def test_shared_lane_serializes_concurrent_tasks(store):
     await asyncio.gather(
         *(rhythm.deliver("same-room", TEXT, 0, current, sender(n), record) for n in (1, 2))
     )
-    assert output == [1, 1, 1, 2, 2, 2]
+    assert output == [1] * len(display_bubbles(TEXT)) + [2] * len(display_bubbles(TEXT))
 
 
 async def test_unknown_delivery_stops_and_restart_does_not_replay(store):
@@ -166,14 +167,17 @@ async def test_new_input_during_first_wait_sends_nothing(store):
     assert result["status"] == "cancelled" and not result["sent"]
 
 
+@pytest.mark.parametrize("repeat", [1, 8])
 @pytest.mark.parametrize("group", ["", "12345"])
 @pytest.mark.parametrize("is_current", [True, False])
 async def test_final_qq_hook_preserves_quote_and_at_only_first_bubble(
-    store, tmp_path, group, is_current
+    store, tmp_path, group, is_current, repeat
 ):
     # Run the actual production hook with the real PG store + QQAgent audit.
     # Avoid importing/starting a second AstrBot process in the unit test runner.
     import time
+
+    reply_text = TEXT * repeat
 
     from test_qq_chat import Event
 
@@ -239,11 +243,11 @@ async def test_final_qq_hook_preserves_quote_and_at_only_first_bubble(
     await rhythm.save({**DEFAULT_RHYTHM, "min_seconds": 0, "max_seconds": 0})
     event = Event(group=group)
     event.extra.update(
-        companion_reply=TEXT,
+        companion_reply=reply_text,
         companion_message=source,
         companion_quote_target={"id": "789", "sender": "123"},
     )
-    result = SimpleNamespace(chain=[Plain(TEXT)])
+    result = SimpleNamespace(chain=[Plain(reply_text)])
     event.get_result = lambda: result
     event.clear_result = lambda: setattr(event, "get_result", lambda: None)
     obj = SimpleNamespace(
@@ -259,18 +263,29 @@ async def test_final_qq_hook_preserves_quote_and_at_only_first_bubble(
         return
     assert event.stopped and event.extra["companion_rhythm_handled"]
     assert event.get_result() is None, "AstrBot respond stage must not send the full result again"
-    assert len(wire) == 3 and wire[0][0] == {"type": "reply", "data": {"id": "789"}}
+    assert len(wire) == len(display_bubbles(reply_text)) and wire[0][0] == {
+        "type": "reply",
+        "data": {"id": "789"},
+    }
     if group:
         assert wire[0][1] == {"type": "at", "data": {"qq": "123"}}
     assert all(p[0]["type"] == "text" for p in wire[1:])
+    assert "".join(
+        segment["data"]["text"]
+        for message in wire
+        for segment in message
+        if segment["type"] == "text"
+    ) == "".join(display_bubbles(reply_text))
+    if repeat > 1:
+        assert len(wire) > 3
     async with store.pool.connection() as conn:
         rows = await (
             await conn.execute("SELECT content FROM messages WHERE role='assistant' ORDER BY id")
         ).fetchall()
-    assert [r["content"] for r in rows] == bubbles(TEXT)
+    assert [r["content"] for r in rows] == display_bubbles(reply_text)
     # Re-entering the hook cannot dispatch a second reply for this source.
     await ns["quote_qq_reply"](obj, event)
-    assert len(wire) == 3
+    assert len(wire) == len(display_bubbles(reply_text))
 
 
 class EligibleRandom:
